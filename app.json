@@ -1,0 +1,153 @@
+{
+  "name": "NUB Music Bot",
+  "description": "🔥 Ultimate Telegram Voice Chat Music Bot — HD audio/video streaming, multi-language support, premium UI. Powered by Go (gogram) and NTgCalls.",
+  "logo": "https://raw.githubusercontent.com/nub-coders/nubgo-music-bot/refs/heads/main/assets/music.jpg",
+  "keywords": [
+    "go",
+    "telegram",
+    "MusicBot",
+    "telegram-bot",
+    "voice-chat",
+    "gogram",
+    "ntgcalls"
+  ],
+  "env": {
+    "API_ID": {
+      "description": "Telegram App API ID — get from https://my.telegram.org",
+      "value": "2040",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram App API Hash — get from https://my.telegram.org",
+      "value": "b18441a1ff607e10a989891a5462e627",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Bot token from @BotFather",
+      "value": "",
+      "required": true
+    },
+    "STRING_SESSION": {
+      "description": "Gogram native or Pyrogram v1/v2 user session string for primary assistant account (* Required)",
+      "value": "",
+      "required": true
+    },
+    "STRING_SESSION2": {
+      "description": "User session string for 2nd assistant account (Multi-Assistant Mode)",
+      "value": "",
+      "required": false
+    },
+    "STRING_SESSION3": {
+      "description": "User session string for 3rd assistant account (Multi-Assistant Mode)",
+      "value": "",
+      "required": false
+    },
+    "STRING_SESSION4": {
+      "description": "User session string for 4th assistant account (Multi-Assistant Mode)",
+      "value": "",
+      "required": false
+    },
+    "STRING_SESSION5": {
+      "description": "User session string for 5th assistant account (Multi-Assistant Mode)",
+      "value": "",
+      "required": false
+    },
+    "AUTO_LEAVING_ASSISTANT": {
+      "description": "Auto-leave idle chats for assistant accounts to prevent hitting Telegram's 500-group limit (True/False)",
+      "value": "True",
+      "required": false
+    },
+    "ASSISTANT_LEAVE_TIME": {
+      "description": "Duration (in seconds) the assistant waits before leaving an inactive chat (default: 5400 / 90 min)",
+      "value": "5400",
+      "required": false
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram user ID (get it from @userinfobot)",
+      "value": "6076474757",
+      "required": true
+    },
+    "MONGODB_URI": {
+      "description": "MongoDB connection string — e.g. mongodb+srv://user:pass@cluster.mongodb.net/db",
+      "value": "",
+      "required": true
+    },
+    "YOUTUBE_API_KEYS": {
+      "description": "Comma-separated YouTube Data API v3 keys — get from https://console.cloud.google.com (10K req/day free each). Leave blank to use yt-dlp fallback only.",
+      "value": "",
+      "required": false
+    },
+    "GROUP": {
+      "description": "Support group username (without @)",
+      "value": "nub_coder_s",
+      "required": false
+    },
+    "LOGGER_ID": {
+      "description": "Chat ID of a group/channel to receive error logs",
+      "value": "",
+      "required": false
+    },
+    "DB_NAME": {
+      "description": "MongoDB database name (default: musicbot)",
+      "value": "musicbot",
+      "required": false
+    },
+    "YTUBE_API_BASE_URL": {
+      "description": "Base URL for external ytube API proxy (optional)",
+      "value": "https://api.nubcoders.com",
+      "required": false
+    },
+    "YTUBE_API_TOKEN": {
+      "description": "Auth token for the external ytube API proxy (optional)",
+      "value": "",
+      "required": false
+    },
+    "YT_COOKIES_FILE": {
+      "description": "Path to a Netscape cookies.txt for yt-dlp (age-restricted/region-locked videos). Optional.",
+      "value": "",
+      "required": false
+    },
+    "COOKIES_FROM_BROWSER": {
+      "description": "Export cookies from local browser profile(s) at startup: firefox/chrome/chromium/edge/brave/opera/vivaldi/safari/whale (comma/space-separated, tried in order). Needs that browser on the host (not available on Heroku container stack). Optional.",
+      "value": "",
+      "required": false
+    },
+    "COOKIES_BOOTSTRAP_URL": {
+      "description": "URL yt-dlp hits during the cookie export so it exits cleanly and validates the cookies. Optional (has a sensible default).",
+      "value": "",
+      "required": false
+    },
+    "COOKIES_REFRESH_HOURS": {
+      "description": "Re-export the cookie file every N hours (YouTube rotates tokens mid-session). 0 disables. Optional.",
+      "value": "",
+      "required": false
+    },
+    "SPOTIFY_CLIENT_ID": {
+      "description": "Spotify app Client ID — play Spotify links via YouTube. Create an app at https://developer.spotify.com/dashboard. Leave blank to disable.",
+      "value": "",
+      "required": false
+    },
+    "SPOTIFY_CLIENT_SECRET": {
+      "description": "Spotify app Client Secret (keep private). Required together with SPOTIFY_CLIENT_ID to enable Spotify links.",
+      "value": "",
+      "required": false
+    },
+    "ALLOW_PRIVATE_STREAM_URLS": {
+      "description": "Allow /play direct URLs that resolve to loopback/private/link-local addresses. Leave False (default) — True lets anyone in a group make the bot fetch cloud metadata or LAN services. Only enable for a private media server. Optional.",
+      "value": "False",
+      "required": false
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/go"
+    }
+  ],
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "free"
+    }
+  },
+  "stack": "container"
+}

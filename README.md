@@ -68,4 +68,8 @@ The NUB API and YouTube Data API are optional. Configure `YTUBE_API_TOKEN` (or `
 
 Direct media URLs resolving to loopback, private, link-local, multicast, or unspecified addresses are rejected by default. Only set `ALLOW_PRIVATE_STREAM_URLS=true` for a deliberately private deployment.
 
+## Deployment
+
+`app.json` declares the app for platforms that read it (Heroku, Render, etc.). It uses the `heroku/go` buildpack, a single `worker` process, and the same environment variables listed above. The NTgCalls native library is fetched at build time by `scripts/fetch-ntgcalls.sh` (see the Dockerfile), so no binary asset is committed.
+
 Do not commit `.env`, session strings, bot tokens, or cookie files.
