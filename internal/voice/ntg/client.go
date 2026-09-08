@@ -1,0 +1,12 @@
+package ntg
+
+type Client struct {
+	ptr                         uintptr
+	connectionChangeCallbacks   []ConnectionChangeCallback
+	streamEndCallbacks          []StreamEndCallback
+	upgradeCallbacks            []UpgradeCallback
+	frameCallbacks              []FrameCallback
+	remoteSourceCallbacks       []RemoteSourceCallback
+	broadcastTimestampCallbacks []BroadcastTimestampCallback
+	broadcastPartCallbacks      []BroadcastPartCallback
+}

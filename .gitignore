@@ -1,0 +1,12 @@
+.env
+bin/
+cache/
+downloads/
+*.log
+*.session
+*.db
+.DS_Store
+
+# NTgCalls native library is downloaded at build time (120 MB, architecture-specific).
+libs/lib/libntgcalls.so
+libs/include/ntgcalls.h
