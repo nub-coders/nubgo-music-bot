@@ -1,6 +1,6 @@
 # NUB Go Music Bot
 
-A Telegram group voice-chat music bot written in Go, using Gogram, NTgCalls, FFmpeg, yt-dlp, and optional MongoDB persistence.
+A Telegram group voice-chat music bot written in Go, using the NUB Gogram fork (`github.com/nub-coders/gogram`), NTgCalls, FFmpeg, yt-dlp, and optional MongoDB persistence.
 
 ## Current MVP
 
@@ -50,7 +50,7 @@ Container links are expanded before enqueueing: Spotify track/album/playlist (cl
 - CGO and a C/C++ compiler for builds
 - FFmpeg
 - yt-dlp
-- A bot token and at least one assistant user session
+- A bot token and at least one authorized assistant user session
 
 Copy `.env.example` to `.env`, configure it, then run:
 
