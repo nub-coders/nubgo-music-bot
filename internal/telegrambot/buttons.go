@@ -120,7 +120,10 @@ func helpButtons(showAdmin bool) *telegram.ReplyInlineMarkup {
 	return keyboard.Build()
 }
 
-func playbackButtons(paused bool) *telegram.ReplyInlineMarkup {
+// playbackButtons renders the control row. When progressText is non-empty it is
+// inserted as a native disabled button between the controls and Close, matching
+// the Python bot's update_progress_button layout.
+func playbackButtons(paused bool, progressText string) *telegram.ReplyInlineMarkup {
 	toggleText, toggleData := "▷", "np:resume"
 	toggleStyle := buttonStyle(false, false, true, emojiPlay)
 	if !paused {
@@ -133,6 +136,9 @@ func playbackButtons(paused bool) *telegram.ReplyInlineMarkup {
 		styledData("‣‣I", "np:skip", buttonStyle(true, false, false, emojiSkip)),
 		styledData("▢", "np:stop", buttonStyle(false, true, false, emojiStop)),
 	)
+	if progressText != "" {
+		keyboard.AddRow(telegram.Button.Disabled(progressText))
+	}
 	keyboard.AddRow(styledData("✖ ᴄʟᴏsᴇ", "np:close", buttonStyle(false, true, false, emojiClose)))
 	return keyboard.Build()
 }

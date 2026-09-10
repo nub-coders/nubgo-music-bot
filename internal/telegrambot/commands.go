@@ -55,7 +55,7 @@ func (h *Handlers) commandsCallback(callback *telegram.CallbackQuery) error {
 		_, _ = callback.Answer("Unknown category.", &telegram.CallbackOptions{Alert: true})
 		return nil
 	}
-	_, _ = callback.Answer("", nil)
+	_, _ = callback.Answer("")
 	msg, err := callback.GetMessage()
 	if err != nil || msg == nil {
 		return nil

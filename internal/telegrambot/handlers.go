@@ -32,7 +32,9 @@ type Handlers struct {
 	started      time.Time
 
 	mu         sync.Mutex
-	npMessages map[int64]int32 // playback chatID -> now-playing message ID
+	npMessages map[int64]int32              // playback chatID -> now-playing message ID
+	npLocks    map[int64]*sync.Mutex        // playback chatID -> card serialization lock
+	npProgress map[int64]context.CancelFunc // playback chatID -> progress loop cancel
 	// Channel playback (/cplay) streams into a chat linked to the one the
 	// command was sent in, so cards and buttons stay where the user is.
 	uiChats       map[int64]int64 // playback chatID -> chat the cards live in
@@ -49,8 +51,22 @@ func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorize
 		bot: bot, player: player, auth: auth, store: store, sources: sources,
 		botID: botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
 		started: time.Now(), npMessages: make(map[int64]int32), voice: voice,
-		uiChats: make(map[int64]int64), playbackChats: make(map[int64]int64),
+		npLocks:    make(map[int64]*sync.Mutex),
+		npProgress: make(map[int64]context.CancelFunc),
+		uiChats:    make(map[int64]int64), playbackChats: make(map[int64]int64),
 	}
+}
+
+// npLock returns the per-chat mutex that serializes now-playing card writes.
+func (h *Handlers) npLock(chatID int64) *sync.Mutex {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	lock, ok := h.npLocks[chatID]
+	if !ok {
+		lock = &sync.Mutex{}
+		h.npLocks[chatID] = lock
+	}
+	return lock
 }
 
 func (h *Handlers) Register() {
@@ -248,14 +264,6 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 	}
 
 	var builder strings.Builder
-	if started != nil {
-		label := "Started:"
-		if force {
-			label = "Force playing:"
-		}
-		builder.WriteString(emoji(emojiPlay, "▶️") + " <b>" + label + "</b> " + formatTrack(started.Track))
-		builder.WriteString("\n")
-	}
 	for index, result := range queued {
 		if index >= 10 {
 			builder.WriteString(fmt.Sprintf("\n…and %d more queued", len(queued)-index))
@@ -268,7 +276,14 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 		_, _ = editRich(status, emoji(emojiError, "❌")+" None of the sources could be resolved.", htmlOptions())
 		return nil
 	}
-	_, _ = editRich(status, strings.TrimRight(builder.String(), "\n"), htmlOptions())
+	// The now-playing card already announces the started track, so the status
+	// message is only kept when it still carries queue information. Otherwise it
+	// is deleted to avoid posting the same track twice (matches the Python bot).
+	if summary := strings.TrimRight(builder.String(), "\n"); summary != "" {
+		_, _ = editRich(status, summary, htmlOptions())
+	} else {
+		_, _ = status.Delete()
+	}
 	h.refreshNowPlaying(targetChatID)
 	return nil
 }
@@ -598,16 +613,37 @@ func formatDuration(duration time.Duration) string {
 	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 }
 
-func progressBar(position, duration time.Duration) string {
+// progressLabel renders the playback progress shown inside a disabled inline
+// button, matching the Python bot's 8-segment marker style:
+//
+//	01:23 ─ ─ ▷ ─ ─ ─ ─ 3:35
+func progressLabel(position, duration time.Duration) string {
 	if duration <= 0 {
 		return ""
 	}
-	const width = 12
-	filled := int((position.Seconds() / duration.Seconds()) * width)
-	if filled > width {
-		filled = width
+	const segments = 8
+	if position < 0 {
+		position = 0
 	}
-	return "▰" + strings.Repeat("▬", filled) + strings.Repeat("—", width-filled) + "▰"
+	if position > duration {
+		position = duration
+	}
+	marker := int((position.Seconds() / duration.Seconds()) * segments)
+	if marker > segments-1 {
+		marker = segments - 1
+	}
+	var bar strings.Builder
+	for i := 0; i < segments; i++ {
+		if i > 0 {
+			bar.WriteString(" ")
+		}
+		if i == marker {
+			bar.WriteString("▷")
+			continue
+		}
+		bar.WriteString("─")
+	}
+	return formatDuration(position) + " " + bar.String() + " " + formatDuration(duration)
 }
 
 func htmlOptions() *telegram.SendOptions { return &telegram.SendOptions{ParseMode: "html"} }
@@ -622,8 +658,7 @@ func queueText(snapshot playback.Snapshot) string {
 		builder.WriteString(" — <i>paused</i>")
 	}
 	if snapshot.Current != nil && snapshot.Current.Duration > 0 {
-		builder.WriteString("\n" + progressBar(snapshot.Position, snapshot.Current.Duration))
-		builder.WriteString(fmt.Sprintf(" <code>%s / %s</code>", formatDuration(snapshot.Position), formatDuration(snapshot.Current.Duration)))
+		builder.WriteString("\n<code>" + escape(progressLabel(snapshot.Position, snapshot.Current.Duration)) + "</code>")
 	}
 	builder.WriteString(fmt.Sprintf("\n🔁 <code>%s</code>", []string{"off", "track", "queue"}[snapshot.Loop]))
 	for index, track := range snapshot.Queue {
@@ -649,6 +684,7 @@ func (h *Handlers) TrackStarted(chatID int64, track media.Track) {
 		h.voice.RecordPlay(chatID)
 	}
 	h.postNowPlaying(chatID)
+	h.startProgress(chatID, track)
 }
 func (h *Handlers) QueueEnded(chatID int64) {
 	h.closeNowPlaying(chatID)
