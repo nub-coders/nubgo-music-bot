@@ -15,38 +15,55 @@ import (
 // -- /start, /help, /ping, /about -------------------------------------------
 
 func (h *Handlers) start(m *telegram.NewMessage) error {
-	text := "🎵 <b>NUB Music Bot</b>\n\n" +
-		"A Go-powered Telegram voice-chat music bot.\n\n" +
-		"Add me to a group with an active voice chat, then use <code>/play song name</code>.\n\n" +
-		"<code>/help</code> — view all commands"
-	_, err := m.Reply(text, htmlOptions())
+	username := ""
+	if botUser := h.bot.Me(); botUser != nil {
+		username = botUser.Username
+	}
+	name := "NUB Music Bot"
+	if sender, err := m.GetSender(); err == nil && sender != nil {
+		name = strings.TrimSpace(sender.FirstName)
+	}
+	body := startCard(username, name)
+	_, err := replyRich(m, body, &telegram.SendOptions{ReplyMarkup: startButtons(username, h.ownerID, h.supportGroup)})
 	return err
 }
 
 func (h *Handlers) help(m *telegram.NewMessage) error {
-	text := "<b>🎧 Playback</b>\n" +
-		"<code>/play query</code> — play audio (URL, search, YouTube/Spotify playlist)\n" +
-		"<code>/vplay query</code> — play video\n" +
-		"<code>/pause</code> · <code>/resume</code> · <code>/skip</code>\n" +
-		"<code>/stop</code> — stop and leave the voice chat\n" +
-		"<code>/shuffle</code> · <code>/seek 90</code> · <code>/seekback 15</code>\n" +
-		"<code>/queue</code> · <code>/loop off|track|queue</code> · <code>/np</code>\n\n" +
-		"<b>🎼 Playlists</b>\n" +
-		"<code>/playlist</code> — list your playlists\n" +
-		"<code>/playlist new name</code> — create\n" +
-		"<code>/playlist add name query</code> — add a track\n" +
-		"<code>/playlist rm name n</code> — remove track n\n" +
-		"<code>/playlist del name</code> — delete\n" +
-		"<code>/pl name</code> — play a saved playlist\n\n" +
-		"<b>🛡️ Auth & moderation</b>\n" +
-		"<code>/auth</code> · <code>/unauth</code> · <code>/authlist</code>\n" +
-		"<code>/block</code> · <code>/unblock</code> · <code>/blocklist</code>\n" +
-		"<code>/setwelcome text</code> · <code>/welcome</code> (view)\n\n" +
-		"<b>ℹ️ Info</b>\n" +
-		"<code>/ping</code> · <code>/about</code> · <code>/stats</code>\n" +
-		"<b>Owner:</b> <code>/sudo</code>, <code>/delsudo</code>, <code>/broadcast</code>"
-	_, err := m.Reply(text, htmlOptions())
+	showAdmin := h.ownerID > 0 && m.SenderID() == h.ownerID
+	if sudo, err := h.store.IsSudo(context.Background(), h.botID, m.SenderID()); err == nil && sudo {
+		showAdmin = true
+	}
+	body := helpCategorySelect(showAdmin)
+	_, err := replyRich(m, body, &telegram.SendOptions{ReplyMarkup: helpButtons(showAdmin)})
 	return err
+}
+
+// commandsCallback routes the help-category selector buttons. Each category is
+// rendered as a flat rich block and sent back through the callback's message.
+func (h *Handlers) commandsCallback(callback *telegram.CallbackQuery) error {
+	data := callback.DataString()
+	if !strings.HasPrefix(data, "commands_") {
+		return nil
+	}
+	category := strings.TrimPrefix(data, "commands_")
+	showAdmin := h.ownerID > 0 && callback.GetSenderID() == h.ownerID
+	if sudo, err := h.store.IsSudo(context.Background(), h.botID, callback.GetSenderID()); err == nil && sudo {
+		showAdmin = true
+	}
+	body, markup := helpCategoryPage(category, showAdmin)
+	if body == "" {
+		_, _ = callback.Answer("Unknown category.", &telegram.CallbackOptions{Alert: true})
+		return nil
+	}
+	_, _ = callback.Answer("", nil)
+	msg, err := callback.GetMessage()
+	if err != nil || msg == nil {
+		return nil
+	}
+	if _, err := editRich(msg, body, &telegram.SendOptions{ReplyMarkup: markup}); err != nil {
+		_, _ = callback.Answer("Failed to update help page.", &telegram.CallbackOptions{Alert: true})
+	}
+	return nil
 }
 
 func (h *Handlers) ping(m *telegram.NewMessage) error {

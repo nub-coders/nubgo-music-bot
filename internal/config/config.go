@@ -12,11 +12,14 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const defaultSupportGroup = "nub_coder_s"
+
 type Config struct {
 	APIID                  int32
 	APIHash                string
 	BotToken               string
 	OwnerID                int64
+	SupportGroup           string
 	AssistantSessions      []string
 	MongoDBURI             string
 	DatabaseName           string
@@ -65,6 +68,7 @@ func Load() (Config, error) {
 		APIHash:                strings.TrimSpace(os.Getenv("API_HASH")),
 		BotToken:               strings.TrimSpace(os.Getenv("BOT_TOKEN")),
 		OwnerID:                ownerID,
+		SupportGroup:           envOr("GROUP", defaultSupportGroup),
 		AssistantSessions:      assistantSessions(),
 		MongoDBURI:             firstNonEmpty("MONGODB_URI", "MONGO_DB_URI"),
 		DatabaseName:           envOr("DB_NAME", "musicbot"),

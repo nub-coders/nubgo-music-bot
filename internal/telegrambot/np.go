@@ -2,7 +2,7 @@ package telegrambot
 
 import (
 	"context"
-	"html"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +14,8 @@ import (
 
 func itoa(value int) string { return strconv.Itoa(value) }
 
-// nowPlayingText renders the inline now-playing card.
+// nowPlayingText renders the inline now-playing card using rich helpers and
+// Python-matching custom emoji HTML tags.
 func nowPlayingText(snapshot playback.Snapshot) string {
 	current := snapshot.Current
 	if current == nil {
@@ -24,40 +25,40 @@ func nowPlayingText(snapshot playback.Snapshot) string {
 	if title == "" {
 		title = current.OriginalInput
 	}
-	var builder strings.Builder
+	var b strings.Builder
 	if snapshot.Paused {
-		builder.WriteString("⏸️ <b>Paused</b>\n")
+		b.WriteString(emoji(emojiPause, "⏸️") + " <b>Paused</b>\n")
 	} else {
-		builder.WriteString("▶️ <b>Now playing</b>\n")
+		b.WriteString(emoji(emojiNowPlaying, "▶️") + " <b>Now playing</b>\n")
 	}
-	builder.WriteString("🎵 <a href=\"" + html.EscapeString(mediaWwwLink(*current)) + "\">" + html.EscapeString(title) + "</a>")
+	b.WriteString(emoji(emojiMusicNote, "🎵") + " <a href=\"" + escape(mediaWwwLink(*current)) + "\">" + escape(title) + "</a>")
 	if current.Author != "" {
-		builder.WriteString("\n👤 " + html.EscapeString(current.Author))
+		b.WriteString("\n" + emoji(emojiUser, "👤") + " " + escape(current.Author))
 	}
 	if current.RequesterName != "" {
-		builder.WriteString("\n🗣 Requested by <code>" + html.EscapeString(current.RequesterName) + "</code>")
+		b.WriteString("\n" + emoji(emojiMic, "🗣") + " Requested by " + richCode(current.RequesterName))
 	}
 	if current.Duration > 0 {
 		bar := progressBar(snapshot.Position, current.Duration)
 		if bar != "" {
-			builder.WriteString("\n" + bar)
+			b.WriteString("\n" + bar)
 		}
-		builder.WriteString(" <code>" + formatDuration(snapshot.Position) + " / " + formatDuration(current.Duration) + "</code>")
+		b.WriteString(" " + richCode(formatDuration(snapshot.Position)+" / "+formatDuration(current.Duration)))
 	}
 	if snapshot.Loop != playback.LoopOff {
-		builder.WriteString("\n🔁 <code>" + []string{"off", "track", "queue"}[snapshot.Loop] + "</code>")
+		b.WriteString("\n" + emoji(emojiLoop, "🔁") + " " + richCode([]string{"off", "track", "queue"}[snapshot.Loop]))
 	}
 	if len(snapshot.Queue) > 0 {
-		builder.WriteString("\n\n<b>Up next</b>")
+		b.WriteString("\n\n<b>Up next</b>")
 		for index, track := range snapshot.Queue {
 			if index >= 3 {
-				builder.WriteString("\n…and " + itoa(len(snapshot.Queue)-index) + " more")
+				b.WriteString(fmt.Sprintf("\n…and %d more", len(snapshot.Queue)-index))
 				break
 			}
-			builder.WriteString("\n" + itoa(index+1) + ". " + formatTrack(track))
+			b.WriteString(fmt.Sprintf("\n%d. %s", index+1, formatTrack(track)))
 		}
 	}
-	return builder.String()
+	return b.String()
 }
 
 func mediaWwwLink(track media.Track) string {
@@ -71,31 +72,11 @@ func mediaWwwLink(track media.Track) string {
 }
 
 func npButtons(snapshot playback.Snapshot) *telegram.ReplyInlineMarkup {
-	keyboard := telegram.NewKeyboard()
-	toggleText, toggleData := "⏸️ Pause", "np:pause"
-	if snapshot.Paused {
-		toggleText, toggleData = "▶️ Resume", "np:resume"
-	}
-	loopLabel := "🔁 Off"
-	switch snapshot.Loop {
-	case playback.LoopTrack:
-		loopLabel = "🔂 Track"
-	case playback.LoopQueue:
-		loopLabel = "🔁 Queue"
-	}
-	keyboard.AddRow(
-		telegram.Button.Data(toggleText, toggleData),
-		telegram.Button.Data("⏭️ Skip", "np:skip"),
-		telegram.Button.Data(loopLabel, "np:loop"),
-	)
-	keyboard.AddRow(
-		telegram.Button.Data("⏹️ Stop", "np:stop"),
-		telegram.Button.Data("📃 Queue", "np:queue"),
-	)
-	return keyboard.Build()
+	return playbackButtons(snapshot.Paused)
 }
 
-// postNowPlaying sends or updates the inline control card for a chat.
+// postNowPlaying sends or updates the inline control card for a chat using
+// rich-first helpers with graceful fallback.
 func (h *Handlers) postNowPlaying(chatID int64) {
 	snapshot, err := h.player.Snapshot(context.Background(), chatID)
 	if err != nil || snapshot.Current == nil {
@@ -106,13 +87,15 @@ func (h *Handlers) postNowPlaying(chatID int64) {
 	h.mu.Unlock()
 
 	text := nowPlayingText(snapshot)
+	markup := npButtons(snapshot)
 	if exists {
-		if _, editErr := h.bot.EditMessage(chatID, messageID, text, &telegram.SendOptions{ParseMode: "html", ReplyMarkup: npButtons(snapshot)}); editErr == nil {
+		_, err := editRichPeer(h.bot, chatID, messageID, text, &telegram.SendOptions{ReplyMarkup: markup})
+		if err == nil {
 			return
 		}
 	}
-	sent, sendErr := h.bot.SendMessage(chatID, text, &telegram.SendOptions{ParseMode: "html", ReplyMarkup: npButtons(snapshot)})
-	if sendErr != nil {
+	sent, err := sendRich(h.bot, chatID, text, &telegram.SendOptions{ReplyMarkup: markup})
+	if err != nil {
 		return
 	}
 	h.mu.Lock()
@@ -133,8 +116,8 @@ func (h *Handlers) refreshNowPlaying(chatID int64) {
 		h.postNowPlaying(chatID)
 		return
 	}
-	if _, editErr := h.bot.EditMessage(chatID, messageID, nowPlayingText(snapshot), &telegram.SendOptions{ParseMode: "html", ReplyMarkup: npButtons(snapshot)}); editErr != nil {
-		_ = editErr
+	_, err = editRichPeer(h.bot, chatID, messageID, nowPlayingText(snapshot), &telegram.SendOptions{ReplyMarkup: npButtons(snapshot)})
+	if err != nil {
 		h.mu.Lock()
 		delete(h.npMessages, chatID)
 		h.mu.Unlock()
@@ -158,7 +141,7 @@ func (h *Handlers) nowPlaying(m *telegram.NewMessage) error {
 	defer cancel()
 	snapshot, err := h.player.Snapshot(ctx, m.ChannelID())
 	if err != nil || snapshot.Current == nil {
-		_, _ = m.Reply("Nothing is playing right now.", htmlOptions())
+		_, _ = replyRich(m, emoji(emojiWarning, "⚠️")+" <b>Nothing is playing right now.</b>", htmlOptions())
 		return nil
 	}
 	if !h.requireControl(ctx, m) {
@@ -216,7 +199,7 @@ func (h *Handlers) onNPButton(callback *telegram.CallbackQuery) error {
 		}
 		_, _ = callback.Answer("", nil)
 		h.refreshNowPlaying(chatID)
-	case "stop":
+	case "stop", "close":
 		if err := h.player.Stop(ctx, chatID); err != nil {
 			_, _ = callback.Answer("❌ "+err.Error(), nil)
 			return nil

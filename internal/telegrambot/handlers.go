@@ -17,28 +17,29 @@ import (
 )
 
 type Handlers struct {
-	bot     *telegram.Client
-	player  *playback.Service
-	auth    *Authorizer
-	store   storage.Access
-	sources *media.Sources
-	botID   int64
-	ownerID int64
-	logger  *slog.Logger
-	timeout time.Duration
-	started time.Time
+	bot          *telegram.Client
+	player       *playback.Service
+	auth         *Authorizer
+	store        storage.Access
+	sources      *media.Sources
+	botID        int64
+	ownerID      int64
+	supportGroup string
+	logger       *slog.Logger
+	timeout      time.Duration
+	started      time.Time
 
 	mu         sync.Mutex
 	npMessages map[int64]int32 // chatID -> now-playing message ID
 }
 
-func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, timeout time.Duration, logger *slog.Logger) *Handlers {
+func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Handlers{
 		bot: bot, player: player, auth: auth, store: store, sources: sources,
-		botID: botID, ownerID: ownerID, timeout: timeout, logger: logger,
+		botID: botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
 		started: time.Now(), npMessages: make(map[int64]int32),
 	}
 }
@@ -87,8 +88,9 @@ func (h *Handlers) Register() {
 	h.bot.OnCommand("setwelcome", h.setWelcome, telegram.IsGroup)
 	h.bot.OnCommand("welcome", h.welcome, telegram.IsGroup)
 
-	// Inline control buttons on the now-playing card.
+	// Inline control buttons on the now-playing card and rich help cards.
 	h.bot.AddCallbackHandler("np:", h.onNPButton, telegram.IsGroup)
+	h.bot.OnCallback("commands_", h.commandsCallback)
 }
 
 // -- /play & /vplay ----------------------------------------------------------
@@ -123,7 +125,7 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 		requesterName = strings.TrimSpace(sender.FirstName + " " + sender.LastName)
 	}
 
-	status, err := m.Reply(fmt.Sprintf("🔎 Resolving <b>%d</b> source(s)…", len(entries)), htmlOptions())
+	status, err := replyRich(m, fmt.Sprintf("%s <b>Resolving %d source(s)…</b>", emoji(emojiLoading, "🔎"), len(entries)), htmlOptions())
 	if err != nil {
 		return err
 	}
@@ -136,7 +138,7 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 		itemCancel()
 		if err != nil {
 			if index == 0 && len(entries) == 1 {
-				_, _ = status.Edit("❌ "+html.EscapeString(err.Error()), htmlOptions())
+				_, _ = editRich(status, emoji(emojiError, "❌")+" "+escape(err.Error()), htmlOptions())
 				return nil
 			}
 			h.logger.Warn("skipping source that failed to resolve", "chat_id", m.ChannelID(), "query", entry.Query, "error", err)
@@ -148,13 +150,13 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 			queued = append(queued, result)
 		}
 		if len(entries) > 1 && (index+1)%5 == 0 {
-			_, _ = status.Edit(fmt.Sprintf("🔎 Queued <b>%d</b>/<b>%d</b> sources…", index+1, len(entries)), htmlOptions())
+			_, _ = editRich(status, fmt.Sprintf("%s Queued <b>%d</b>/<b>%d</b> sources…", emoji(emojiLoading, "🔎"), index+1, len(entries)), htmlOptions())
 		}
 	}
 
 	var builder strings.Builder
 	if started != nil {
-		builder.WriteString("▶️ <b>Started:</b> " + formatTrack(started.Track))
+		builder.WriteString(emoji(emojiPlay, "▶️") + " <b>Started:</b> " + formatTrack(started.Track))
 		builder.WriteString("\n")
 	}
 	for index, result := range queued {
@@ -162,14 +164,14 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 			builder.WriteString(fmt.Sprintf("\n…and %d more queued", len(queued)-index))
 			break
 		}
-		builder.WriteString(fmt.Sprintf("➕ <b>Queued #%d:</b> %s", result.Position, formatTrack(result.Track)))
+		builder.WriteString(fmt.Sprintf("%s <b>Queued #%d:</b> %s", emoji(emojiAdd, "➕"), result.Position, formatTrack(result.Track)))
 		builder.WriteString("\n")
 	}
 	if started == nil && len(queued) == 0 {
-		_, _ = status.Edit("❌ None of the sources could be resolved.", htmlOptions())
+		_, _ = editRich(status, emoji(emojiError, "❌")+" None of the sources could be resolved.", htmlOptions())
 		return nil
 	}
-	_, _ = status.Edit(strings.TrimRight(builder.String(), "\n"), htmlOptions())
+	_, _ = editRich(status, strings.TrimRight(builder.String(), "\n"), htmlOptions())
 	h.refreshNowPlaying(m.ChannelID())
 	return nil
 }
@@ -186,11 +188,11 @@ func (h *Handlers) pause(m *telegram.NewMessage, paused bool) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	message := "▶️ Playback resumed."
+	message := emoji(emojiPlay, "▶️") + " <b>Playback resumed.</b>"
 	if paused {
-		message = "⏸️ Playback paused."
+		message = emoji(emojiPause, "⏸️") + " <b>Playback paused.</b>"
 	}
-	_, _ = m.Reply(message, htmlOptions())
+	_, _ = replyRich(m, message, htmlOptions())
 	h.refreshNowPlaying(m.ChannelID())
 	return nil
 }
@@ -207,11 +209,11 @@ func (h *Handlers) skip(m *telegram.NewMessage) error {
 		return nil
 	}
 	if track == nil {
-		_, _ = m.Reply("⏹️ Queue ended.", htmlOptions())
+		_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Queue ended.</b>", htmlOptions())
 		h.closeNowPlaying(m.ChannelID())
 		return nil
 	}
-	_, _ = m.Reply("⏭️ <b>Now playing:</b> "+formatTrack(*track), htmlOptions())
+	_, _ = replyRich(m, emoji(emojiSkip, "⏭️")+" <b>Now playing:</b> "+formatTrack(*track), htmlOptions())
 	h.refreshNowPlaying(m.ChannelID())
 	return nil
 }
@@ -226,7 +228,7 @@ func (h *Handlers) stop(m *telegram.NewMessage) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = m.Reply("⏹️ Playback stopped and queue cleared.", htmlOptions())
+	_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Playback stopped and queue cleared.</b>", htmlOptions())
 	h.closeNowPlaying(m.ChannelID())
 	return nil
 }
@@ -241,7 +243,7 @@ func (h *Handlers) shuffle(m *telegram.NewMessage) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = m.Reply("🔀 Queue shuffled.", htmlOptions())
+	_, _ = replyRich(m, emoji(emojiRefresh, "🔀")+" <b>Queue shuffled.</b>", htmlOptions())
 	h.refreshNowPlaying(m.ChannelID())
 	return nil
 }
@@ -325,10 +327,10 @@ func (h *Handlers) queue(m *telegram.NewMessage) error {
 	defer cancel()
 	snapshot, err := h.player.Snapshot(ctx, m.ChannelID())
 	if err != nil || snapshot.Current == nil {
-		_, _ = m.Reply("The playback queue is empty.", htmlOptions())
+		_, _ = replyRich(m, emoji(emojiQueueIcon, "🗃")+" <b>The playback queue is empty.</b>", htmlOptions())
 		return nil
 	}
-	_, _ = m.Reply(queueText(snapshot), htmlOptions())
+	_, _ = replyRich(m, queueText(snapshot), htmlOptions())
 	return nil
 }
 
@@ -347,14 +349,14 @@ func (h *Handlers) loop(m *telegram.NewMessage) error {
 	case "queue", "all":
 		mode = playback.LoopQueue
 	default:
-		_, _ = m.Reply("Usage: <code>/loop off|track|queue</code>", htmlOptions())
+		_, _ = replyRich(m, emoji(emojiInfo, "ℹ️")+" Usage: <code>/loop off|track|queue</code>", htmlOptions())
 		return nil
 	}
 	if err := h.player.SetLoop(ctx, m.ChannelID(), mode); err != nil {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = m.Reply(fmt.Sprintf("🔁 Loop mode set to <code>%s</code>.", []string{"off", "track", "queue"}[mode]), htmlOptions())
+	_, _ = replyRich(m, fmt.Sprintf("%s Loop mode set to <code>%s</code>.", emoji(emojiLoop, "🔁"), []string{"off", "track", "queue"}[mode]), htmlOptions())
 	h.refreshNowPlaying(m.ChannelID())
 	return nil
 }
@@ -460,6 +462,7 @@ func formatDuration(duration time.Duration) string {
 	}
 	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 }
+
 func progressBar(position, duration time.Duration) string {
 	if duration <= 0 {
 		return ""
@@ -471,6 +474,7 @@ func progressBar(position, duration time.Duration) string {
 	}
 	return "▰" + strings.Repeat("▬", filled) + strings.Repeat("—", width-filled) + "▰"
 }
+
 func htmlOptions() *telegram.SendOptions { return &telegram.SendOptions{ParseMode: "html"} }
 
 func queueText(snapshot playback.Snapshot) string {
