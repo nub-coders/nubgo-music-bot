@@ -21,4 +21,4 @@ require (
 	golang.org/x/text v0.17.0 // indirect
 )
 
-replace github.com/amarnathcjd/gogram => github.com/nub-coders/gogram v0.0.0-20260909200134-bb72f6e175f3
+replace github.com/amarnathcjd/gogram => github.com/nub-coders/gogram v0.0.0-20260910105843-67f2190ade12
