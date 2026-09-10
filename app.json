@@ -62,6 +62,16 @@
       "value": "5400",
       "required": false
     },
+    "ASSISTANT_MAX_LEAVES_PER_SWEEP": {
+      "description": "Maximum chats one assistant may leave per hourly sweep. 0 means unlimited. Caps the blast radius if the idle heuristic misfires (default: 10)",
+      "value": "10",
+      "required": false
+    },
+    "ASSISTANT_LEAVE_DRY_RUN": {
+      "description": "Log every would-be auto-leave without actually leaving. Use it to rehearse a settings change (True/False)",
+      "value": "False",
+      "required": false
+    },
     "OWNER_ID": {
       "description": "Your Telegram user ID (get it from @userinfobot)",
       "value": "6076474757",

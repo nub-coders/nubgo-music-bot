@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 	"github.com/nub-coders/nub-go-music-bot/internal/playback"
 	"github.com/nub-coders/nub-go-music-bot/internal/storage"
+	"github.com/nub-coders/nub-go-music-bot/internal/voice"
 )
 
 type Handlers struct {
@@ -30,17 +32,24 @@ type Handlers struct {
 	started      time.Time
 
 	mu         sync.Mutex
-	npMessages map[int64]int32 // chatID -> now-playing message ID
+	npMessages map[int64]int32 // playback chatID -> now-playing message ID
+	// Channel playback (/cplay) streams into a chat linked to the one the
+	// command was sent in, so cards and buttons stay where the user is.
+	uiChats       map[int64]int64 // playback chatID -> chat the cards live in
+	playbackChats map[int64]int64 // command chatID -> playback chatID
+
+	voice *voice.Manager
 }
 
-func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger) *Handlers {
+func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger, voice *voice.Manager) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Handlers{
 		bot: bot, player: player, auth: auth, store: store, sources: sources,
 		botID: botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
-		started: time.Now(), npMessages: make(map[int64]int32),
+		started: time.Now(), npMessages: make(map[int64]int32), voice: voice,
+		uiChats: make(map[int64]int64), playbackChats: make(map[int64]int64),
 	}
 }
 
@@ -62,11 +71,20 @@ func (h *Handlers) Register() {
 	// Group-only playback commands.
 	h.bot.OnCommand("play", func(m *telegram.NewMessage) error { return h.play(m, false) }, telegram.IsGroup)
 	h.bot.OnCommand("vplay", func(m *telegram.NewMessage) error { return h.play(m, true) }, telegram.IsGroup)
+	h.bot.OnCommand("playforce", func(m *telegram.NewMessage) error { return h.playWithMode(m, false, true, false) }, telegram.IsGroup)
+	h.bot.OnCommand("vplayforce", func(m *telegram.NewMessage) error { return h.playWithMode(m, true, true, false) }, telegram.IsGroup)
+	h.bot.OnCommand("cplay", func(m *telegram.NewMessage) error { return h.playWithMode(m, false, false, true) }, telegram.IsGroup)
+	h.bot.OnCommand("cvplay", func(m *telegram.NewMessage) error { return h.playWithMode(m, true, false, true) }, telegram.IsGroup)
+	h.bot.OnCommand("cplayforce", func(m *telegram.NewMessage) error { return h.playWithMode(m, false, true, true) }, telegram.IsGroup)
+	h.bot.OnCommand("cvplayforce", func(m *telegram.NewMessage) error { return h.playWithMode(m, true, true, true) }, telegram.IsGroup)
 	h.bot.OnCommand("pause", func(m *telegram.NewMessage) error { return h.pause(m, true) }, telegram.IsGroup)
 	h.bot.OnCommand("resume", func(m *telegram.NewMessage) error { return h.pause(m, false) }, telegram.IsGroup)
 	h.bot.OnCommand("skip", h.skip, telegram.IsGroup)
+	h.bot.OnCommand("cskip", h.skip, telegram.IsGroup)
 	h.bot.OnCommand("stop", h.stop, telegram.IsGroup)
 	h.bot.OnCommand("end", h.stop, telegram.IsGroup)
+	h.bot.OnCommand("cstop", h.stop, telegram.IsGroup)
+	h.bot.OnCommand("cend", h.stop, telegram.IsGroup)
 	h.bot.OnCommand("queue", h.queue, telegram.IsGroup)
 	h.bot.OnCommand("q", h.queue, telegram.IsGroup)
 	h.bot.OnCommand("loop", h.loop, telegram.IsGroup)
@@ -93,9 +111,15 @@ func (h *Handlers) Register() {
 	h.bot.OnCallback("commands_", h.commandsCallback)
 }
 
-// -- /play & /vplay ----------------------------------------------------------
+// -- /play, /vplay and their force / channel variants ------------------------
 
 func (h *Handlers) play(m *telegram.NewMessage, video bool) error {
+	return h.playWithMode(m, video, false, false)
+}
+
+// playWithMode backs every play command. force replaces whatever is playing
+// right now; channelMode streams into the chat linked to this one.
+func (h *Handlers) playWithMode(m *telegram.NewMessage, video, force, channelMode bool) error {
 	input := strings.TrimSpace(m.Args())
 	if input == "" {
 		_, _ = m.Reply("Usage: <code>/play song name or URL</code>", htmlOptions())
@@ -103,22 +127,83 @@ func (h *Handlers) play(m *telegram.NewMessage, video bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
 	defer cancel()
-	entries := []media.SourceEntry{{Query: input}}
-	if h.sources != nil {
-		entries = h.sources.Expand(ctx, input)
-	}
-	if len(entries) == 0 {
-		entries = []media.SourceEntry{{Query: input}}
-	}
-	return h.playEntries(m, video, entries)
-}
 
-func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []media.SourceEntry) error {
-	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
-	defer cancel()
-	if !h.requireControl(ctx, m) {
+	targetChatID := m.ChannelID()
+	if channelMode {
+		linked, err := h.linkedChatID(m.ChannelID())
+		if err != nil {
+			h.logger.Warn("resolve linked chat", "chat_id", m.ChannelID(), "error", err)
+			_, _ = replyRich(m, emoji(emojiError, "❌")+" <b>This chat has no linked channel to stream into.</b>", htmlOptions())
+			return nil
+		}
+		targetChatID = linked
+	}
+
+	if !h.canPlay(ctx, m, targetChatID, force) {
 		return nil
 	}
+
+	// A playlist / album link expands into many queries; a search or a single
+	// video URL stays a one-element list.
+	entries := []media.SourceEntry{{Query: input}}
+	if h.sources != nil {
+		if expanded := h.sources.Expand(ctx, input); len(expanded) > 0 {
+			entries = expanded
+		}
+	}
+	if channelMode {
+		h.setUIChat(targetChatID, m.ChannelID())
+	}
+	return h.playEntries(m, video, entries, targetChatID, force)
+}
+
+// linkedChatID returns the chat linked to chatID — a discussion group's
+// broadcast channel, or a channel's discussion group.
+func (h *Handlers) linkedChatID(chatID int64) (int64, error) {
+	peer, err := h.bot.ResolvePeer(chatID)
+	if err != nil {
+		return 0, err
+	}
+	channel, ok := peer.(*telegram.InputPeerChannel)
+	if !ok {
+		return 0, errors.New("basic groups cannot have a linked channel")
+	}
+	full, err := h.bot.ChannelsGetFullChannel(&telegram.InputChannelObj{ChannelID: channel.ChannelID, AccessHash: channel.AccessHash})
+	if err != nil {
+		return 0, err
+	}
+	info, ok := full.FullChat.(*telegram.ChannelFull)
+	if !ok || info.LinkedChatID == 0 {
+		return 0, errors.New("no linked chat")
+	}
+	return -1_000_000_000_000 - info.LinkedChatID, nil
+}
+
+// canPlay authorizes a play command. Force-play interrupts the running track,
+// so besides the usual admin / sudo / authorized tiers it also lets the user
+// who requested the current track replace it.
+func (h *Handlers) canPlay(ctx context.Context, m *telegram.NewMessage, targetChatID int64, force bool) bool {
+	allowed, err := h.auth.CanControl(ctx, m.ChannelID(), m.SenderID())
+	if err != nil {
+		h.logger.Error("authorization check failed", "error", err)
+		_, _ = m.Reply("❌ Could not verify your permissions.", htmlOptions())
+		return false
+	}
+	if allowed {
+		return true
+	}
+	if force && m.SenderID() > 0 {
+		if current := h.player.Current(ctx, targetChatID); current != nil && current.RequesterID == m.SenderID() {
+			return true
+		}
+	}
+	_, _ = m.Reply("⛔ You must be a chat administrator or an authorized playback user.", htmlOptions())
+	return false
+}
+
+func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []media.SourceEntry, targetChatID int64, force bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
+	defer cancel()
 	sender, _ := m.GetSender()
 	requesterName, requesterID := "User", m.SenderID()
 	if sender != nil {
@@ -134,14 +219,22 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 	var queued []playback.EnqueueResult
 	for index, entry := range entries {
 		itemCtx, itemCancel := context.WithTimeout(ctx, h.timeout)
-		result, err := h.player.Enqueue(itemCtx, m.ChannelID(), entry.Query, video, requesterID, requesterName)
+		var result playback.EnqueueResult
+		var err error
+		if force && index == 0 {
+			// Resolves first, then interrupts: a query that cannot be played
+			// leaves the current track running.
+			result, err = h.player.ForcePlay(itemCtx, targetChatID, entry.Query, video, requesterID, requesterName)
+		} else {
+			result, err = h.player.Enqueue(itemCtx, targetChatID, entry.Query, video, requesterID, requesterName)
+		}
 		itemCancel()
 		if err != nil {
 			if index == 0 && len(entries) == 1 {
 				_, _ = editRich(status, emoji(emojiError, "❌")+" "+escape(err.Error()), htmlOptions())
 				return nil
 			}
-			h.logger.Warn("skipping source that failed to resolve", "chat_id", m.ChannelID(), "query", entry.Query, "error", err)
+			h.logger.Warn("skipping source that failed to resolve", "chat_id", targetChatID, "query", entry.Query, "error", err)
 			continue
 		}
 		if result.Started {
@@ -156,7 +249,11 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 
 	var builder strings.Builder
 	if started != nil {
-		builder.WriteString(emoji(emojiPlay, "▶️") + " <b>Started:</b> " + formatTrack(started.Track))
+		label := "Started:"
+		if force {
+			label = "Force playing:"
+		}
+		builder.WriteString(emoji(emojiPlay, "▶️") + " <b>" + label + "</b> " + formatTrack(started.Track))
 		builder.WriteString("\n")
 	}
 	for index, result := range queued {
@@ -172,80 +269,49 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 		return nil
 	}
 	_, _ = editRich(status, strings.TrimRight(builder.String(), "\n"), htmlOptions())
-	h.refreshNowPlaying(m.ChannelID())
+	h.refreshNowPlaying(targetChatID)
 	return nil
 }
 
 // -- playback controls -------------------------------------------------------
 
-func (h *Handlers) pause(m *telegram.NewMessage, paused bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if !h.requireControl(ctx, m) {
-		return nil
-	}
-	if err := h.player.Pause(ctx, m.ChannelID(), paused); err != nil {
-		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
-		return nil
-	}
-	message := emoji(emojiPlay, "▶️") + " <b>Playback resumed.</b>"
-	if paused {
-		message = emoji(emojiPause, "⏸️") + " <b>Playback paused.</b>"
-	}
-	_, _ = replyRich(m, message, htmlOptions())
-	h.refreshNowPlaying(m.ChannelID())
-	return nil
+// setUIChat records that playback in playbackChatID was started from uiChatID,
+// so cards and later control commands follow the user's chat.
+func (h *Handlers) setUIChat(playbackChatID, uiChatID int64) {
+	h.mu.Lock()
+	h.uiChats[playbackChatID] = uiChatID
+	h.playbackChats[uiChatID] = playbackChatID
+	h.mu.Unlock()
 }
 
-func (h *Handlers) skip(m *telegram.NewMessage) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	if !h.requireControl(ctx, m) {
-		return nil
+// uiChatFor returns the chat that a playback chat's cards belong in.
+func (h *Handlers) uiChatFor(playbackChatID int64) int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ui, ok := h.uiChats[playbackChatID]; ok {
+		return ui
 	}
-	track, err := h.player.Skip(ctx, m.ChannelID())
-	if err != nil {
-		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
-		return nil
-	}
-	if track == nil {
-		_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Queue ended.</b>", htmlOptions())
-		h.closeNowPlaying(m.ChannelID())
-		return nil
-	}
-	_, _ = replyRich(m, emoji(emojiSkip, "⏭️")+" <b>Now playing:</b> "+formatTrack(*track), htmlOptions())
-	h.refreshNowPlaying(m.ChannelID())
-	return nil
+	return playbackChatID
 }
 
-func (h *Handlers) stop(m *telegram.NewMessage) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if !h.requireControl(ctx, m) {
-		return nil
+// controlChatID maps a control command to the chat playback actually runs in.
+// Only used when this chat has no playback of its own, so a group that plays
+// locally is never redirected to its linked channel.
+func (h *Handlers) controlChatID(ctx context.Context, m *telegram.NewMessage) int64 {
+	chatID := m.ChannelID()
+	h.mu.Lock()
+	linked, ok := h.playbackChats[chatID]
+	h.mu.Unlock()
+	if !ok || linked == chatID {
+		return chatID
 	}
-	if err := h.player.Stop(ctx, m.ChannelID()); err != nil {
-		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
-		return nil
+	if h.player.Current(ctx, chatID) != nil {
+		return chatID
 	}
-	_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Playback stopped and queue cleared.</b>", htmlOptions())
-	h.closeNowPlaying(m.ChannelID())
-	return nil
-}
-
-func (h *Handlers) shuffle(m *telegram.NewMessage) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if !h.requireControl(ctx, m) {
-		return nil
+	if h.player.Current(ctx, linked) != nil {
+		return linked
 	}
-	if err := h.player.Shuffle(ctx, m.ChannelID()); err != nil {
-		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
-		return nil
-	}
-	_, _ = replyRich(m, emoji(emojiRefresh, "🔀")+" <b>Queue shuffled.</b>", htmlOptions())
-	h.refreshNowPlaying(m.ChannelID())
-	return nil
+	return chatID
 }
 
 func parseSeekArg(raw string) (time.Duration, bool) {
@@ -271,6 +337,80 @@ func parseSeekArg(raw string) (time.Duration, bool) {
 	return time.Duration(total) * time.Second, true
 }
 
+func (h *Handlers) pause(m *telegram.NewMessage, paused bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if !h.requireControl(ctx, m) {
+		return nil
+	}
+	targetChatID := h.controlChatID(ctx, m)
+	if err := h.player.Pause(ctx, targetChatID, paused); err != nil {
+		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
+		return nil
+	}
+	message := emoji(emojiPlay, "▶️") + " <b>Playback resumed.</b>"
+	if paused {
+		message = emoji(emojiPause, "⏸️") + " <b>Playback paused.</b>"
+	}
+	_, _ = replyRich(m, message, htmlOptions())
+	h.refreshNowPlaying(targetChatID)
+	return nil
+}
+
+func (h *Handlers) skip(m *telegram.NewMessage) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if !h.requireControl(ctx, m) {
+		return nil
+	}
+	targetChatID := h.controlChatID(ctx, m)
+	track, err := h.player.Skip(ctx, targetChatID)
+	if err != nil {
+		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
+		return nil
+	}
+	if track == nil {
+		_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Queue ended.</b>", htmlOptions())
+		h.closeNowPlaying(targetChatID)
+		return nil
+	}
+	_, _ = replyRich(m, emoji(emojiSkip, "⏭️")+" <b>Now playing:</b> "+formatTrack(*track), htmlOptions())
+	h.refreshNowPlaying(targetChatID)
+	return nil
+}
+
+func (h *Handlers) stop(m *telegram.NewMessage) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if !h.requireControl(ctx, m) {
+		return nil
+	}
+	targetChatID := h.controlChatID(ctx, m)
+	if err := h.player.Stop(ctx, targetChatID); err != nil {
+		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
+		return nil
+	}
+	_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Playback stopped and queue cleared.</b>", htmlOptions())
+	h.closeNowPlaying(targetChatID)
+	return nil
+}
+
+func (h *Handlers) shuffle(m *telegram.NewMessage) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if !h.requireControl(ctx, m) {
+		return nil
+	}
+	targetChatID := h.controlChatID(ctx, m)
+	if err := h.player.Shuffle(ctx, targetChatID); err != nil {
+		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
+		return nil
+	}
+	_, _ = replyRich(m, emoji(emojiRefresh, "🔀")+" <b>Queue shuffled.</b>", htmlOptions())
+	h.refreshNowPlaying(targetChatID)
+	return nil
+}
+
 func (h *Handlers) seekForward(m *telegram.NewMessage) error { return h.seek(m, true) }
 func (h *Handlers) seekBack(m *telegram.NewMessage) error    { return h.seek(m, false) }
 
@@ -280,52 +420,46 @@ func (h *Handlers) seek(m *telegram.NewMessage, forward bool) error {
 	if !h.requireControl(ctx, m) {
 		return nil
 	}
+	targetChatID := h.controlChatID(ctx, m)
 	offset, ok := parseSeekArg(m.Args())
 	if !ok {
 		_, _ = m.Reply("Usage: <code>/seek 90</code>, <code>/seek 1:30</code> or <code>/seekback 15</code>", htmlOptions())
 		return nil
 	}
 	if forward {
-		snapshot, err := h.player.Snapshot(ctx, m.ChannelID())
+		snapshot, err := h.player.Snapshot(ctx, targetChatID)
 		if err != nil {
 			_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 			return nil
 		}
-		// /seek N jumps to an absolute position; /seekback N rewinds by N.
+		// "/seek" is an absolute position only when the argument includes a
+		// colon (1:30); plain seconds move forward from the current position.
 		target := offset
-		if snapshot.Current != nil && snapshot.Current.Duration > 0 {
-			// "/seek" is treated as an absolute position only when the argument
-			// includes a colon (1:30); plain seconds move forward from current.
-			if strings.Contains(m.Args(), ":") {
-				target = offset
-			} else {
-				target = snapshot.Position + offset
-			}
-		} else {
+		if !strings.Contains(m.Args(), ":") {
 			target = snapshot.Position + offset
 		}
 		offset = target
 	} else {
-		snapshot, err := h.player.Snapshot(ctx, m.ChannelID())
+		snapshot, err := h.player.Snapshot(ctx, targetChatID)
 		if err != nil {
 			_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 			return nil
 		}
 		offset = snapshot.Position - offset
 	}
-	if err := h.player.Seek(ctx, m.ChannelID(), offset); err != nil {
+	if err := h.player.Seek(ctx, targetChatID, offset); err != nil {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
 	_, _ = m.Reply(fmt.Sprintf("🎚️ Seeking to <code>%s</code>", formatDuration(offset)), htmlOptions())
-	h.refreshNowPlaying(m.ChannelID())
+	h.refreshNowPlaying(targetChatID)
 	return nil
 }
 
 func (h *Handlers) queue(m *telegram.NewMessage) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	snapshot, err := h.player.Snapshot(ctx, m.ChannelID())
+	snapshot, err := h.player.Snapshot(ctx, h.controlChatID(ctx, m))
 	if err != nil || snapshot.Current == nil {
 		_, _ = replyRich(m, emoji(emojiQueueIcon, "🗃")+" <b>The playback queue is empty.</b>", htmlOptions())
 		return nil
@@ -340,6 +474,7 @@ func (h *Handlers) loop(m *telegram.NewMessage) error {
 	if !h.requireControl(ctx, m) {
 		return nil
 	}
+	targetChatID := h.controlChatID(ctx, m)
 	var mode playback.LoopMode
 	switch strings.ToLower(strings.TrimSpace(m.Args())) {
 	case "", "off", "0":
@@ -352,12 +487,12 @@ func (h *Handlers) loop(m *telegram.NewMessage) error {
 		_, _ = replyRich(m, emoji(emojiInfo, "ℹ️")+" Usage: <code>/loop off|track|queue</code>", htmlOptions())
 		return nil
 	}
-	if err := h.player.SetLoop(ctx, m.ChannelID(), mode); err != nil {
+	if err := h.player.SetLoop(ctx, targetChatID, mode); err != nil {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
 	_, _ = replyRich(m, fmt.Sprintf("%s Loop mode set to <code>%s</code>.", emoji(emojiLoop, "🔁"), []string{"off", "track", "queue"}[mode]), htmlOptions())
-	h.refreshNowPlaying(m.ChannelID())
+	h.refreshNowPlaying(targetChatID)
 	return nil
 }
 
@@ -510,6 +645,9 @@ func (h *Handlers) TrackStarted(chatID int64, track media.Track) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = h.store.RecordPlay(ctx, chatID)
+	if h.voice != nil {
+		h.voice.RecordPlay(chatID)
+	}
 	h.postNowPlaying(chatID)
 }
 func (h *Handlers) QueueEnded(chatID int64) {

@@ -76,12 +76,14 @@ func npButtons(snapshot playback.Snapshot) *telegram.ReplyInlineMarkup {
 }
 
 // postNowPlaying sends or updates the inline control card for a chat using
-// rich-first helpers with graceful fallback.
+// rich-first helpers with graceful fallback. Channel playback renders the card
+// in the chat the command came from, not the (often unreadable) linked chat.
 func (h *Handlers) postNowPlaying(chatID int64) {
 	snapshot, err := h.player.Snapshot(context.Background(), chatID)
 	if err != nil || snapshot.Current == nil {
 		return
 	}
+	uiChatID := h.uiChatFor(chatID)
 	h.mu.Lock()
 	messageID, exists := h.npMessages[chatID]
 	h.mu.Unlock()
@@ -89,12 +91,12 @@ func (h *Handlers) postNowPlaying(chatID int64) {
 	text := nowPlayingText(snapshot)
 	markup := npButtons(snapshot)
 	if exists {
-		_, err := editRichPeer(h.bot, chatID, messageID, text, &telegram.SendOptions{ReplyMarkup: markup})
+		_, err := editRichPeer(h.bot, uiChatID, messageID, text, &telegram.SendOptions{ReplyMarkup: markup})
 		if err == nil {
 			return
 		}
 	}
-	sent, err := sendRich(h.bot, chatID, text, &telegram.SendOptions{ReplyMarkup: markup})
+	sent, err := sendRich(h.bot, uiChatID, text, &telegram.SendOptions{ReplyMarkup: markup})
 	if err != nil {
 		return
 	}
@@ -116,7 +118,7 @@ func (h *Handlers) refreshNowPlaying(chatID int64) {
 		h.postNowPlaying(chatID)
 		return
 	}
-	_, err = editRichPeer(h.bot, chatID, messageID, nowPlayingText(snapshot), &telegram.SendOptions{ReplyMarkup: npButtons(snapshot)})
+	_, err = editRichPeer(h.bot, h.uiChatFor(chatID), messageID, nowPlayingText(snapshot), &telegram.SendOptions{ReplyMarkup: npButtons(snapshot)})
 	if err != nil {
 		h.mu.Lock()
 		delete(h.npMessages, chatID)
@@ -129,9 +131,13 @@ func (h *Handlers) closeNowPlaying(chatID int64) {
 	h.mu.Lock()
 	messageID, exists := h.npMessages[chatID]
 	delete(h.npMessages, chatID)
+	uiChatID, hasUI := h.uiChats[chatID]
 	h.mu.Unlock()
+	if !hasUI {
+		uiChatID = chatID
+	}
 	if exists {
-		_, _ = h.bot.DeleteMessages(chatID, []int32{messageID}, true)
+		_, _ = h.bot.DeleteMessages(uiChatID, []int32{messageID}, true)
 	}
 }
 
@@ -139,7 +145,8 @@ func (h *Handlers) closeNowPlaying(chatID int64) {
 func (h *Handlers) nowPlaying(m *telegram.NewMessage) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	snapshot, err := h.player.Snapshot(ctx, m.ChannelID())
+	targetChatID := h.controlChatID(ctx, m)
+	snapshot, err := h.player.Snapshot(ctx, targetChatID)
 	if err != nil || snapshot.Current == nil {
 		_, _ = replyRich(m, emoji(emojiWarning, "⚠️")+" <b>Nothing is playing right now.</b>", htmlOptions())
 		return nil
@@ -147,20 +154,29 @@ func (h *Handlers) nowPlaying(m *telegram.NewMessage) error {
 	if !h.requireControl(ctx, m) {
 		return nil
 	}
-	h.postNowPlaying(m.ChannelID())
+	h.postNowPlaying(targetChatID)
 	return nil
 }
 
 // onNPButton routes inline control presses from the now-playing card.
 func (h *Handlers) onNPButton(callback *telegram.CallbackQuery) error {
 	action := strings.TrimPrefix(callback.DataString(), "np:")
-	chatID := callback.ChannelID()
+	uiChatID := callback.ChannelID()
 	userID := callback.GetSenderID()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	allowed, err := h.auth.CanControl(ctx, chatID, userID)
+	// The card may control playback in a linked chat (/cplay).
+	chatID := uiChatID
+	h.mu.Lock()
+	linked, hasLinked := h.playbackChats[uiChatID]
+	h.mu.Unlock()
+	if hasLinked && linked != uiChatID && h.player.Current(ctx, uiChatID) == nil {
+		chatID = linked
+	}
+
+	allowed, err := h.auth.CanControl(ctx, uiChatID, userID)
 	if err != nil || !allowed {
 		_, _ = callback.Answer("⛔ Only admins or authorized users can control playback.", nil)
 		return nil
@@ -213,7 +229,7 @@ func (h *Handlers) onNPButton(callback *telegram.CallbackQuery) error {
 			return nil
 		}
 		_, _ = callback.Answer("", nil)
-		_, _ = h.bot.SendMessage(chatID, queueText(snapshot), htmlOptions())
+		_, _ = h.bot.SendMessage(uiChatID, queueText(snapshot), htmlOptions())
 	default:
 		_, _ = callback.Answer("", nil)
 	}

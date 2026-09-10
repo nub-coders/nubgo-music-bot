@@ -75,6 +75,10 @@ type enqueueCommand struct {
 	track media.Track
 	resp  chan commandResult
 }
+type forceCommand struct {
+	track media.Track
+	resp  chan commandResult
+}
 type skipCommand struct{ resp chan commandResult }
 type stopCommand struct{ resp chan error }
 type pauseCommand struct {
@@ -120,6 +124,29 @@ func (s *Service) Enqueue(ctx context.Context, chatID int64, input string, video
 
 	resp := make(chan commandResult, 1)
 	if err := s.send(ctx, chatID, enqueueCommand{track: track, resp: resp}); err != nil {
+		return EnqueueResult{}, err
+	}
+	select {
+	case result := <-resp:
+		return result.enqueue, result.err
+	case <-ctx.Done():
+		return EnqueueResult{}, ctx.Err()
+	}
+}
+
+// ForcePlay interrupts the current track and starts input immediately, keeping
+// the pending queue. The replacement is resolved *before* the running track is
+// touched, so a query that cannot be resolved leaves playback untouched.
+func (s *Service) ForcePlay(ctx context.Context, chatID int64, input string, video bool, requesterID int64, requesterName string) (EnqueueResult, error) {
+	track, err := s.resolver.Resolve(ctx, input, video)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	track.RequesterID = requesterID
+	track.RequesterName = requesterName
+
+	resp := make(chan commandResult, 1)
+	if err := s.send(ctx, chatID, forceCommand{track: track, resp: resp}); err != nil {
 		return EnqueueResult{}, err
 	}
 	select {
@@ -225,6 +252,17 @@ func (s *Service) Snapshot(ctx context.Context, chatID int64) (Snapshot, error) 
 	case <-ctx.Done():
 		return Snapshot{}, ctx.Err()
 	}
+}
+
+// Current returns a copy of the track playing in the chat, or nil when nothing
+// is playing. The read goes through the session goroutine, so it is safe to
+// call from Telegram handler goroutines while playback mutates.
+func (s *Service) Current(ctx context.Context, chatID int64) *media.Track {
+	snapshot, err := s.Snapshot(ctx, chatID)
+	if err != nil {
+		return nil
+	}
+	return snapshot.Current
 }
 
 // NotifyStreamEnd is safe to call from NTgCalls callback goroutines. Unknown and
@@ -333,6 +371,8 @@ func (c *chatSession) run() {
 		switch command := command.(type) {
 		case enqueueCommand:
 			command.resp <- c.enqueue(command.track)
+		case forceCommand:
+			command.resp <- c.forcePlay(command.track)
 		case skipCommand:
 			track, err := c.advance(false)
 			command.resp <- commandResult{track: track, err: err}
@@ -382,6 +422,17 @@ func (c *chatSession) enqueue(track media.Track) commandResult {
 		return commandResult{enqueue: EnqueueResult{Track: track, Position: len(c.queue), Started: false}}
 	}
 	if err := c.start(track, false); err != nil {
+		return commandResult{err: err}
+	}
+	return commandResult{enqueue: EnqueueResult{Track: track, Started: true}}
+}
+
+// forcePlay swaps the active track for the given one without disturbing the
+// pending queue, mirroring the Python bot's force-play semantics (the queue
+// keeps playing after the forced track finishes).
+func (c *chatSession) forcePlay(track media.Track) commandResult {
+	replacing := c.current != nil
+	if err := c.start(track, replacing); err != nil {
 		return commandResult{err: err}
 	}
 	return commandResult{enqueue: EnqueueResult{Track: track, Started: true}}

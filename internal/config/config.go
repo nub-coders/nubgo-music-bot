@@ -37,6 +37,12 @@ type Config struct {
 	WorkingDirectory       string
 	CacheDirectory         string
 	LogLevel               string
+
+	// Auto-leave idle chats for assistant accounts so they stay under Telegram's 500-group limit.
+	AutoLeaveEnabled     bool
+	AutoLeaveTime        time.Duration
+	AutoLeaveMaxPerSweep int
+	AutoLeaveDryRun      bool
 }
 
 func Load() (Config, error) {
@@ -83,6 +89,10 @@ func Load() (Config, error) {
 		AllowPrivateStreamURLs: parseBool("ALLOW_PRIVATE_STREAM_URLS", false),
 		MediaResolveTimeout:    parseDurationSeconds("MEDIA_RESOLVE_TIMEOUT", 45*time.Second),
 		ShutdownTimeout:        parseDurationSeconds("SHUTDOWN_TIMEOUT", 15*time.Second),
+		AutoLeaveEnabled:       parseBool("AUTO_LEAVING_ASSISTANT", true),
+		AutoLeaveTime:          parseDurationSeconds("ASSISTANT_LEAVE_TIME", 90*time.Minute),
+		AutoLeaveMaxPerSweep:   parseInt("ASSISTANT_MAX_LEAVES_PER_SWEEP", 10),
+		AutoLeaveDryRun:        parseBool("ASSISTANT_LEAVE_DRY_RUN", false),
 		WorkingDirectory:       cwd,
 		CacheDirectory:         filepath.Join(cwd, "cache"),
 		LogLevel:               strings.ToLower(envOr("LOG_LEVEL", "info")),
@@ -191,6 +201,18 @@ func parseBool(key string, fallback bool) bool {
 	default:
 		return false
 	}
+}
+
+func parseInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func parseDurationSeconds(key string, fallback time.Duration) time.Duration {

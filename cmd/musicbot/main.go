@@ -137,9 +137,19 @@ func main() {
 	player := playback.New(resolver, voiceManager, logger)
 	voiceManager.SetHandlers(player.NotifyStreamEnd, player.NotifyFailure)
 	authorizer := telegrambot.NewAuthorizer(bot, store, botUser.ID, cfg.OwnerID)
-	handlers := telegrambot.NewHandlers(bot, player, authorizer, store, sources, botUser.ID, cfg.OwnerID, cfg.SupportGroup, cfg.MediaResolveTimeout, logger)
+	handlers := telegrambot.NewHandlers(bot, player, authorizer, store, sources, botUser.ID, cfg.OwnerID, cfg.SupportGroup, cfg.MediaResolveTimeout, logger, voiceManager)
 	player.SetObserver(handlers)
 	handlers.Register()
+
+	go voiceManager.AutoLeaveLoop(rootCtx, voice.AutoLeaveOptions{
+		Enabled:     cfg.AutoLeaveEnabled,
+		IdleTimeout: cfg.AutoLeaveTime,
+		MaxPerSweep: cfg.AutoLeaveMaxPerSweep,
+		DryRun:      cfg.AutoLeaveDryRun,
+		LoggerID:    cfg.LoggerID,
+		BotID:       botUser.ID,
+		Store:       store,
+	})
 
 	logger.Info("NUB Go Music Bot started", "assistants", voiceManager.AssistantCount())
 	<-rootCtx.Done()

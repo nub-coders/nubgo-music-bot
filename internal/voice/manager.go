@@ -38,6 +38,7 @@ type Manager struct {
 	mu          sync.RWMutex
 	assistants  map[int]*Assistant
 	sessions    map[int64]*callSession
+	lastPlayed  map[int64]time.Time
 	onStreamEnd func(chatID int64)
 	onFailure   func(chatID int64, err error)
 }
@@ -50,6 +51,7 @@ func NewManager(bot *telegram.Client, logger *slog.Logger) *Manager {
 		bot: bot, logger: logger,
 		assistants: make(map[int]*Assistant),
 		sessions:   make(map[int64]*callSession),
+		lastPlayed: make(map[int64]time.Time),
 	}
 }
 
@@ -88,6 +90,213 @@ func (m *Manager) RegisterAssistant(assistant *Assistant) {
 			handler(chatID, fmt.Errorf("voice connection entered terminal state %d", info.State))
 		}
 	})
+}
+
+// RecordPlay marks the chat as recently active so the auto-leave sweep
+// does not evict it.
+func (m *Manager) RecordPlay(chatID int64) {
+	m.mu.Lock()
+	m.lastPlayed[chatID] = time.Now()
+	m.mu.Unlock()
+}
+
+// AutoLeaveOptions configures the idle-chat sweep.
+type AutoLeaveOptions struct {
+	Enabled bool
+	// IdleTimeout is how long a chat must go without playback before an
+	// assistant leaves it.
+	IdleTimeout time.Duration
+	// MaxPerSweep caps how many chats one assistant may leave per sweep.
+	// Zero means unlimited. The cap bounds the blast radius of a bug in the
+	// idle heuristic: rejoining hundreds of groups needs fresh invite links.
+	MaxPerSweep int
+	// DryRun logs every would-be leave without leaving.
+	DryRun bool
+	// LoggerID is never left.
+	LoggerID int64
+	// BotID and Store are used to keep chats with authorized users.
+	BotID int64
+	Store AuthorizedLister
+}
+
+// AuthorizedLister reports a chat's authorized playback users. Implemented by
+// storage.Access; kept narrow so the voice package does not depend on storage.
+type AuthorizedLister interface {
+	ListAuthorized(ctx context.Context, botID, chatID int64) ([]int64, error)
+}
+
+const (
+	autoLeaveStartupGrace = 90 * time.Second
+	autoLeaveInterval     = time.Hour
+	autoLeaveSpacing      = 2 * time.Second
+)
+
+// AutoLeaveLoop scans each assistant's dialogs and leaves groups that have
+// been idle longer than the configured threshold, keeping assistants safely
+// under Telegram's 500-group membership limit. It returns when ctx is done.
+func (m *Manager) AutoLeaveLoop(ctx context.Context, opts AutoLeaveOptions) {
+	if !opts.Enabled {
+		m.logger.Info("[auto_leave] Disabled (AUTO_LEAVING_ASSISTANT is off); no groups will be left")
+		return
+	}
+	if opts.IdleTimeout <= 0 {
+		opts.IdleTimeout = 90 * time.Minute
+	}
+	sweepCap := "unlimited"
+	if opts.MaxPerSweep > 0 {
+		sweepCap = strconv.Itoa(opts.MaxPerSweep)
+	}
+	m.logger.Info("[auto_leave] Enabled",
+		"idle_threshold", opts.IdleTimeout, "max_per_sweep", sweepCap, "dry_run", opts.DryRun)
+
+	if !sleepCtx(ctx, autoLeaveStartupGrace) { // grace period on startup
+		return
+	}
+	for {
+		m.autoLeaveSweep(ctx, opts)
+		if !sleepCtx(ctx, autoLeaveInterval) {
+			return
+		}
+	}
+}
+
+func (m *Manager) autoLeaveSweep(ctx context.Context, opts AutoLeaveOptions) {
+	m.mu.RLock()
+	assistants := make([]*Assistant, 0, len(m.assistants))
+	for _, assistant := range m.assistants {
+		assistants = append(assistants, assistant)
+	}
+	m.mu.RUnlock()
+
+	for _, assistant := range assistants {
+		if ctx.Err() != nil {
+			return
+		}
+		left := m.autoLeaveAssistant(ctx, assistant, opts)
+		if left > 0 {
+			verb := "left"
+			if opts.DryRun {
+				verb = "would leave"
+			}
+			m.logger.Info("[auto_leave] sweep finished", "assistant", assistant.Index, "action", verb, "chats", left)
+		}
+	}
+}
+
+// autoLeaveAssistant sweeps one assistant's dialogs and returns how many chats
+// it left (or would have left, in dry-run mode).
+func (m *Manager) autoLeaveAssistant(ctx context.Context, assistant *Assistant, opts AutoLeaveOptions) int {
+	if assistant == nil || assistant.Client == nil {
+		return 0
+	}
+	dialogs, err := assistant.Client.GetDialogs(&telegram.DialogOptions{Limit: 0, Context: ctx})
+	if err != nil {
+		m.logger.Warn("[auto_leave] Error scanning dialogs", "assistant", assistant.Index, "error", err)
+		return 0
+	}
+
+	left := 0
+	for index := range dialogs {
+		if ctx.Err() != nil {
+			return left
+		}
+		if opts.MaxPerSweep > 0 && left >= opts.MaxPerSweep {
+			m.logger.Warn("[auto_leave] Per-sweep cap reached; deferring the rest to the next sweep",
+				"assistant", assistant.Index, "cap", opts.MaxPerSweep)
+			return left
+		}
+		dialog := dialogs[index]
+		if !dialog.IsChat() && !dialog.IsChannel() {
+			continue
+		}
+		chatID := dialog.GetChannelID()
+		if chatID == 0 {
+			continue
+		}
+		idle, ok := m.autoLeaveIdleFor(chatID, opts)
+		if !ok {
+			continue
+		}
+		if opts.DryRun {
+			m.logger.Info("[auto_leave][DRY RUN] would leave idle chat — no action taken",
+				"assistant", assistant.Index, "chat_id", chatID, "idle", idle)
+			left++
+			continue
+		}
+		m.logger.Info("[auto_leave] Leaving idle chat", "assistant", assistant.Index, "chat_id", chatID, "idle", idle)
+		if err := assistant.Client.LeaveChannel(chatID); err != nil {
+			m.logger.Warn("[auto_leave] Failed to leave chat", "assistant", assistant.Index, "chat_id", chatID, "error", err)
+			continue
+		}
+		left++
+		// Membership is gone: drop the playback record so a later /play
+		// redoes the join handshake instead of trusting a stale entry.
+		m.forgetChat(chatID)
+		if !sleepCtx(ctx, autoLeaveSpacing) { // rate-limit safety spacing
+			return left
+		}
+	}
+	return left
+}
+
+// autoLeaveIdleFor decides whether a chat may be left, returning how long it
+// has been idle. Every uncertain case keeps the chat: leaving is unrecoverable
+// without a fresh invite link.
+func (m *Manager) autoLeaveIdleFor(chatID int64, opts AutoLeaveOptions) (time.Duration, bool) {
+	if opts.LoggerID != 0 && chatID == opts.LoggerID {
+		return 0, false
+	}
+
+	m.mu.RLock()
+	active := m.sessions[chatID] != nil
+	lastPlayed, played := m.lastPlayed[chatID]
+	m.mu.RUnlock()
+
+	if active {
+		return 0, false
+	}
+	// No observed playback means "unknown", not "idle" — never mass-leave
+	// chats this process has simply never played in.
+	if !played {
+		return 0, false
+	}
+	idle := time.Since(lastPlayed)
+	if idle < opts.IdleTimeout {
+		return 0, false
+	}
+	if opts.Store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		authorized, err := opts.Store.ListAuthorized(ctx, opts.BotID, chatID)
+		cancel()
+		if err != nil {
+			// Fail safe: an unreadable auth list must not turn into a leave.
+			m.logger.Debug("[auto_leave] Keeping chat; authorization lookup failed", "chat_id", chatID, "error", err)
+			return 0, false
+		}
+		if len(authorized) > 0 {
+			return 0, false
+		}
+	}
+	return idle, true
+}
+
+// forgetChat drops the playback record for a chat the assistant has left.
+func (m *Manager) forgetChat(chatID int64) {
+	m.mu.Lock()
+	delete(m.lastPlayed, chatID)
+	m.mu.Unlock()
+}
+
+// sleepCtx waits for d, returning false if ctx is cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (m *Manager) AssistantCount() int {
@@ -258,6 +467,23 @@ func (m *Manager) Close(ctx context.Context) error {
 		assistant.Client.Stop()
 	}
 	return result
+}
+
+// LeaveChat stops any active call in the given chat and tells the assistant
+// to leave. The call is always torn down; the assistant leave is best-effort.
+func (m *Manager) LeaveChat(assistantIdx int, chatID int64) error {
+	_ = m.Stop(context.Background(), chatID)
+	m.mu.RLock()
+	assistant, ok := m.assistants[assistantIdx]
+	m.mu.RUnlock()
+	if !ok || assistant == nil || assistant.Client == nil {
+		return errors.New("assistant is not available")
+	}
+	if err := assistant.Client.LeaveChannel(chatID); err != nil {
+		return fmt.Errorf("leave chat: %w", err)
+	}
+	m.forgetChat(chatID)
+	return nil
 }
 
 func (m *Manager) session(chatID int64) (*callSession, error) {

@@ -519,5 +519,5 @@ func (h *Handlers) playPlaylistNamed(m *telegram.NewMessage, name string) error 
 	for _, track := range playlist.Tracks {
 		entries = append(entries, media.SourceEntry{Query: track.Query, Title: track.Title, Duration: time.Duration(track.Duration) * time.Second})
 	}
-	return h.playEntries(m, false, entries)
+	return h.playEntries(m, false, entries, m.ChannelID(), false)
 }
