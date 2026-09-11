@@ -15,16 +15,33 @@ import (
 // -- /start, /help, /ping, /about -------------------------------------------
 
 func (h *Handlers) start(m *telegram.NewMessage) error {
-	username := ""
-	if botUser := h.bot.Me(); botUser != nil {
-		username = botUser.Username
+	username := h.botUsername()
+	if strings.EqualFold(strings.TrimSpace(m.Args()), "help") {
+		return h.help(m)
 	}
-	name := "NUB Music Bot"
-	if sender, err := m.GetSender(); err == nil && sender != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	sender := senderOrNil(m)
+	name := "there"
+	if sender != nil && strings.TrimSpace(sender.FirstName) != "" {
 		name = strings.TrimSpace(sender.FirstName)
 	}
-	body := startCard(username, name)
-	_, err := replyRich(m, body, &telegram.SendOptions{ReplyMarkup: startButtons(username, h.ownerID, h.supportGroup)})
+
+	greeting := h.startGreeting(ctx)
+	if greeting == "" {
+		greeting = startCard(username, name)
+	}
+	body := formatWelcome(greeting, userMention(sender), m.ChannelID(), h.botMention())
+	markup := startButtons(username, h.ownerID, h.supportGroup)
+
+	if logo := h.welcomeLogo(); logo != "" {
+		if _, err := replyMediaCard(m, logo, body, markup); err == nil {
+			return nil
+		}
+		h.logger.Info("start photo failed, falling back to rich text", "chat_id", m.ChannelID())
+	}
+	_, err := replyRich(m, body, &telegram.SendOptions{ReplyMarkup: markup})
 	return err
 }
 
@@ -39,7 +56,8 @@ func (h *Handlers) help(m *telegram.NewMessage) error {
 }
 
 // commandsCallback routes the help-category selector buttons. Each category is
-// rendered as a flat rich block and sent back through the callback's message.
+// rendered as a flat block and, when the card lives on a photo, edited as its
+// caption so the start-card photo is preserved.
 func (h *Handlers) commandsCallback(callback *telegram.CallbackQuery) error {
 	data := callback.DataString()
 	if !strings.HasPrefix(data, "commands_") {
@@ -50,7 +68,28 @@ func (h *Handlers) commandsCallback(callback *telegram.CallbackQuery) error {
 	if sudo, err := h.store.IsSudo(context.Background(), h.botID, callback.GetSenderID()); err == nil && sudo {
 		showAdmin = true
 	}
-	body, markup := helpCategoryPage(category, showAdmin)
+
+	var (
+		body   string
+		markup *telegram.ReplyInlineMarkup
+	)
+	if category == "home" || category == "back" {
+		sender, _ := callback.GetSender()
+		name := "there"
+		if sender != nil && strings.TrimSpace(sender.FirstName) != "" {
+			name = strings.TrimSpace(sender.FirstName)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		greeting := h.startGreeting(ctx)
+		cancel()
+		if greeting == "" {
+			greeting = startCard(h.botUsername(), name)
+		}
+		body = formatWelcome(greeting, userMention(sender), callback.ChannelID(), h.botMention())
+		markup = startButtons(h.botUsername(), h.ownerID, h.supportGroup)
+	} else {
+		body, markup = helpCategoryPage(category, showAdmin)
+	}
 	if body == "" {
 		_, _ = callback.Answer("Unknown category.", &telegram.CallbackOptions{Alert: true})
 		return nil
@@ -60,7 +99,7 @@ func (h *Handlers) commandsCallback(callback *telegram.CallbackQuery) error {
 	if err != nil || msg == nil {
 		return nil
 	}
-	if _, err := editRich(msg, body, &telegram.SendOptions{ReplyMarkup: markup}); err != nil {
+	if _, err := editCard(callback.Client, msg, body, &telegram.SendOptions{ReplyMarkup: markup}); err != nil {
 		_, _ = callback.Answer("Failed to update help page.", &telegram.CallbackOptions{Alert: true})
 	}
 	return nil
@@ -240,38 +279,20 @@ func (h *Handlers) doBroadcast(m *telegram.NewMessage, force bool) error {
 
 // -- welcome -----------------------------------------------------------------
 
-func (h *Handlers) setWelcome(m *telegram.NewMessage) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if !h.requireControl(ctx, m) {
-		return nil
-	}
-	text := strings.TrimSpace(m.Args())
-	if text == "" {
-		_, _ = m.Reply("Usage: <code>/setwelcome welcome text</code>", htmlOptions())
-		return nil
-	}
-	if err := h.store.SetWelcome(ctx, m.ChannelID(), text); err != nil {
-		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
-		return nil
-	}
-	_, _ = m.Reply("✅ Welcome message saved.", htmlOptions())
-	return nil
-}
-
 func (h *Handlers) welcome(m *telegram.NewMessage) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	text, err := h.store.GetWelcome(ctx, m.ChannelID())
+	text, err := h.store.GetWelcome(ctx, h.botID)
 	if err != nil {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	if text == "" {
-		_, _ = m.Reply("No welcome message is set for this chat.", htmlOptions())
+	if strings.TrimSpace(text) == "" {
+		_, _ = m.Reply("No start welcome message is set. The bot owner can set one with <code>/setwelcome</code> in a reply.", htmlOptions())
 		return nil
 	}
-	_, _ = m.Reply(text, htmlOptions())
+	body := formatWelcome(text, userMention(senderOrNil(m)), m.ChannelID(), h.botMention())
+	_, _ = replyRich(m, body, htmlOptions())
 	return nil
 }
 

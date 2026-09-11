@@ -163,6 +163,50 @@ func editRichPeer(client *telegram.Client, peer any, messageID int32, body strin
 	return client.EditMessage(peer, messageID, normalHTML(body), option)
 }
 
+// mediaOptions builds the options for a photo/video card. Rich markup cannot be
+// attached as a caption, so the body is flattened to the ordinary HTML parser.
+func mediaOptions(body string, markup telegram.ReplyMarkup) *telegram.MediaOptions {
+	return &telegram.MediaOptions{
+		Caption:     normalHTML(body),
+		ParseMode:   "html",
+		ReplyMarkup: markup,
+	}
+}
+
+// sendMediaCard posts mediaPath with the card body as its caption. Gogram picks
+// photo vs. video from the file itself, so the same call serves both.
+func sendMediaCard(client *telegram.Client, peer any, mediaPath, body string, markup telegram.ReplyMarkup) (*telegram.NewMessage, error) {
+	if client == nil {
+		return nil, fmt.Errorf("telegram client is nil")
+	}
+	return client.SendMedia(peer, mediaPath, mediaOptions(body, markup))
+}
+
+// replyMediaCard is sendMediaCard as a reply to m.
+func replyMediaCard(m *telegram.NewMessage, mediaPath, body string, markup telegram.ReplyMarkup) (*telegram.NewMessage, error) {
+	if m == nil {
+		return nil, fmt.Errorf("message is nil")
+	}
+	return m.ReplyMedia(mediaPath, mediaOptions(body, markup))
+}
+
+// editCard updates a card in place, whether it was sent as a rich text message
+// or as a photo/video. Caption-bound cards keep their media: an edit without
+// the original media would strip the photo, so it is passed back through.
+func editCard(client *telegram.Client, msg *telegram.NewMessage, body string, opts ...*telegram.SendOptions) (*telegram.NewMessage, error) {
+	if msg == nil || client == nil {
+		return nil, fmt.Errorf("message client is unavailable")
+	}
+	if !msg.IsMedia() {
+		return editRichPeer(client, msg.ChannelID(), msg.ID, body, opts...)
+	}
+	option := *sendOption(opts...)
+	option.ParseMode = "html"
+	option.Entities = nil
+	option.Media = msg.Media()
+	return client.EditMessage(msg.ChannelID(), msg.ID, normalHTML(body), &option)
+}
+
 func escape(value any) string {
 	return html.EscapeString(fmt.Sprint(value))
 }

@@ -36,6 +36,7 @@ type Config struct {
 	ShutdownTimeout        time.Duration
 	WorkingDirectory       string
 	CacheDirectory         string
+	AssetsDirectory        string
 	LogLevel               string
 
 	// Auto-leave idle chats for assistant accounts so they stay under Telegram's 500-group limit.
@@ -95,6 +96,7 @@ func Load() (Config, error) {
 		AutoLeaveDryRun:        parseBool("ASSISTANT_LEAVE_DRY_RUN", false),
 		WorkingDirectory:       cwd,
 		CacheDirectory:         filepath.Join(cwd, "cache"),
+		AssetsDirectory:        filepath.Join(cwd, "assets"),
 		LogLevel:               strings.ToLower(envOr("LOG_LEVEL", "info")),
 	}
 

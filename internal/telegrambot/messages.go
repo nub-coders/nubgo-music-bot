@@ -75,6 +75,42 @@ func helpBackButtons() *telegram.ReplyInlineMarkup {
 
 func cmdMark(c string) string { return "<mark>" + richCode(c) + "</mark>" }
 
+// userMention renders an HTML mention link for a Telegram user, mirroring the
+// Python bot's `user.mention()`.
+func userMention(user *telegram.UserObj) string {
+	if user == nil {
+		return "ᴜsᴇʀ"
+	}
+	name := strings.TrimSpace(user.FirstName)
+	if name == "" {
+		name = "ᴜsᴇʀ"
+	}
+	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, user.ID, escape(name))
+}
+
+// formatWelcome substitutes the supported placeholders in a stored start or
+// welcome message. The replacement values are already-formatted HTML.
+func formatWelcome(tmpl, name string, id int64, botname string) string {
+	replacer := strings.NewReplacer(
+		"{name}", name,
+		"{id}", fmt.Sprint(id),
+		"{botname}", botname,
+	)
+	return replacer.Replace(tmpl)
+}
+
+// groupWelcome is the fixed thank-you card sent when the bot is added to a
+// group. adders, groupName and botname arrive as pre-formatted HTML (mentions).
+func groupWelcome(adder, groupName, botname string) string {
+	return emoji(emojiMusicNote, "🎵") + " <b>ʜᴇʏ " + adder + "!</b> ᴛʜᴀɴᴋs ꜰᴏʀ ᴀᴅᴅɪɴɢ ᴍᴇ ᴛᴏ <b>" + escape(groupName) + "</b> 🎉\n\n" +
+		"ɪ'ᴍ <b>" + botname + "</b> — ʏᴏᴜʀ ᴅᴇᴅɪᴄᴀᴛᴇᴅ ᴍᴜsɪᴄ ʙᴏᴛ.\n\n" +
+		emoji(emojiMusicNotes, "🎶") + " ᴄʀʏsᴛᴀʟ-ᴄʟᴇᴀʀ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ sᴛʀᴇᴀᴍɪɴɢ\n" +
+		emoji(emojiBolt, "⚡️") + " ʙʟᴀᴢɪɴɢ-ꜰᴀsᴛ ᴘʟᴀʏʙᴀᴄᴋ ᴡɪᴛʜ ǫᴜᴇᴜᴇ\n" +
+		emoji(emojiRocket, "🚀") + " sᴍᴀʀᴛ ᴀᴜᴛᴏᴘʟᴀʏ &amp; sᴜɢɢᴇsᴛɪᴏɴs (" + richCode("/autoplay") + ")\n" +
+		emoji(emojiGlobe, "🌐") + " ʏᴏᴜᴛᴜʙᴇ, sᴘᴏᴛɪꜰʏ &amp; ᴍᴏʀᴇ\n\n" +
+		"<i>ᴜsᴇ " + richCode("/play [song]") + " ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ!</i>"
+}
+
 func startCard(uname, name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -132,7 +168,7 @@ func helpCategoryPage(cat string, showAdmin bool) (string, *telegram.ReplyInline
 		{emoji(emojiBolt, "⚡️") + " " + cmdMark("/ping"), "ʟᴀᴛᴇɴᴄʏ & ᴜᴘᴛɪᴍᴇ"},
 		{emoji(emojiStats, "📊") + " " + cmdMark("/stats"), "ʙᴏᴛ ᴜsᴀɢᴇ sᴛᴀᴛs"},
 		{emoji(emojiInfo, "ℹ️") + " " + cmdMark("/about"), "ᴀʙᴏᴜᴛ ᴛʜɪs ʙᴏᴛ"},
-		{emoji(emojiChat, "💬") + " " + cmdMark("/welcome"), "ᴠɪᴇᴡ ᴄʜᴀᴛ ᴡᴇʟᴄᴏᴍᴇ"},
+		{emoji(emojiChat, "💬") + " " + cmdMark("/welcome"), "ᴠɪᴇᴡ sᴛᴀʀᴛ ᴡᴇʟᴄᴏᴍᴇ"},
 	}
 
 	admin := [][]string{
@@ -145,7 +181,8 @@ func helpCategoryPage(cat string, showAdmin bool) (string, *telegram.ReplyInline
 		{emoji(emojiKey, "🔑") + " " + cmdMark("/sudo") + " " + richCode("/delsudo"), "ᴀᴅᴅ/ʀᴇᴍᴏᴠᴇ sᴜᴅᴏ"},
 		{emoji(emojiCrown, "👑") + " " + cmdMark("/sudolist"), "ʟɪsᴛ sᴜᴅᴏ ᴜsᴇʀs"},
 		{emoji(emojiBroadcast, "📢") + " " + cmdMark("/broadcast") + " " + richCode("/fbroadcast"), "ʙʀᴏᴀᴅᴄᴀsᴛ ᴛᴏ ᴄʜᴀᴛs"},
-		{emoji(emojiPin, "📌") + " " + cmdMark("/setwelcome <text>"), "sᴇᴛ ᴄᴜsᴛᴏᴍ ᴡᴇʟᴄᴏᴍᴇ"},
+		{emoji(emojiPin, "📌") + " " + cmdMark("/setwelcome"), "sᴇᴛ sᴛᴀʀᴛ ᴡᴇʟᴄᴏᴍᴇ (ʀᴇᴘʟʏ)"},
+		{emoji(emojiRefresh, "🔄") + " " + cmdMark("/resetwelcome"), "ʀᴇsᴇᴛ ᴡᴇʟᴄᴏᴍᴇ &amp; ʟᴏɢᴏ"},
 	}
 
 	page := func(title string, rows [][]string, open bool) string {

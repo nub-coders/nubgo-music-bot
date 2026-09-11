@@ -29,6 +29,8 @@ type Handlers struct {
 	botID        int64
 	ownerID      int64
 	supportGroup string
+	logoDir      string
+	fallbackLogo string
 	logger       *slog.Logger
 	timeout      time.Duration
 	started      time.Time
@@ -54,7 +56,7 @@ type Handlers struct {
 	voice *voice.Manager
 }
 
-func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger, voice *voice.Manager) *Handlers {
+func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger, voice *voice.Manager, logoDir, fallbackLogo string) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -62,6 +64,7 @@ func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorize
 		bot: bot, player: player, auth: auth, store: store, sources: sources,
 		related: &media.RelatedResolver{Client: &http.Client{Timeout: 15 * time.Second}},
 		botID:   botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
+		logoDir: logoDir, fallbackLogo: fallbackLogo,
 		started: time.Now(), npMessages: make(map[int64]int32), voice: voice,
 		npLocks:    make(map[int64]*sync.Mutex),
 		npProgress: make(map[int64]context.CancelFunc),
@@ -135,8 +138,15 @@ func (h *Handlers) Register() {
 	h.bot.OnCommand("blocklist", h.blockList, telegram.IsGroup)
 	h.bot.OnCommand("broadcast", h.broadcast)
 	h.bot.OnCommand("fbroadcast", h.broadcastForce)
-	h.bot.OnCommand("setwelcome", h.setWelcome, telegram.IsGroup)
-	h.bot.OnCommand("welcome", h.welcome, telegram.IsGroup)
+	h.bot.OnCommand("setwelcome", h.setWelcome)
+	h.bot.OnCommand("resetwelcome", h.resetWelcome)
+	h.bot.OnCommand("rwelcome", h.resetWelcome)
+	h.bot.OnCommand("welcome", h.welcome)
+
+	// Welcome cards when the bot itself is added to a chat. Basic groups report
+	// through OnChatParticipant; supergroups and channels through OnParticipant.
+	h.bot.OnChatParticipant(h.onChatParticipant)
+	h.bot.OnParticipant(h.onParticipant)
 
 	// Autoplay / related-suggestion commands. The channel (linked-chat) variants
 	// map through controlChatID the same way the play commands do.

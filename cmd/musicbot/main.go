@@ -137,7 +137,7 @@ func main() {
 	player := playback.New(resolver, voiceManager, logger)
 	voiceManager.SetHandlers(player.NotifyStreamEnd, player.NotifyFailure)
 	authorizer := telegrambot.NewAuthorizer(bot, store, botUser.ID, cfg.OwnerID)
-	handlers := telegrambot.NewHandlers(bot, player, authorizer, store, sources, botUser.ID, cfg.OwnerID, cfg.SupportGroup, cfg.MediaResolveTimeout, logger, voiceManager)
+	handlers := telegrambot.NewHandlers(bot, player, authorizer, store, sources, botUser.ID, cfg.OwnerID, cfg.SupportGroup, cfg.MediaResolveTimeout, logger, voiceManager, filepath.Join(cfg.CacheDirectory, "welcome"), filepath.Join(cfg.AssetsDirectory, "music.jpg"))
 	player.SetObserver(handlers)
 	handlers.Register()
 
