@@ -50,30 +50,30 @@ func startButtons(username string, ownerID int64, group string) *telegram.ReplyI
 	keyboard := telegram.NewKeyboard()
 	if username != "" {
 		keyboard.AddRow(styledURL(
-			"➕ ᴀᴅᴅ ᴍᴇ ᴛᴏ ɢʀᴏᴜᴘ",
+			"ᴀᴅᴅ ᴍᴇ ᴛᴏ ɢʀᴏᴜᴘ",
 			"https://t.me/"+username+"?startgroup=true",
 			buttonStyle(true, false, false, emojiAdd),
 		))
 	}
 	keyboard.AddRow(styledData(
-		"ℹ️ ʜᴇʟᴘ & ᴄᴏᴍᴍᴀɴᴅs",
+		"ʜᴇʟᴘ & ᴄᴏᴍᴍᴀɴᴅs",
 		"commands_all",
 		buttonStyle(true, false, false, emojiHelp),
 	))
 	if ownerID > 0 {
 		keyboard.AddRow(
-			styledProfile("👑 ᴄʀᴇᴀᴛᴏʀ", ownerID, buttonStyle(false, false, false, emojiCrown)),
-			styledURL("💬 sᴜᴘᴘᴏʀᴛ ᴄʜᴀᴛ", "https://t.me/"+group, buttonStyle(false, false, false, emojiChat)),
+			styledProfile("ᴄʀᴇᴀᴛᴏʀ", ownerID, buttonStyle(false, false, false, emojiCrown)),
+			styledURL("sᴜᴘᴘᴏʀᴛ ᴄʜᴀᴛ", "https://t.me/"+group, buttonStyle(false, false, false, emojiChat)),
 		)
 	} else {
 		keyboard.AddRow(styledURL(
-			"💬 sᴜᴘᴘᴏʀᴛ ᴄʜᴀᴛ",
+			"sᴜᴘᴘᴏʀᴛ ᴄʜᴀᴛ",
 			"https://t.me/"+group,
 			buttonStyle(false, false, false, emojiChat),
 		))
 	}
 	keyboard.AddRow(styledURL(
-		"🌐 ʀᴇᴘᴏ",
+		"ʀᴇᴘᴏ",
 		repositoryURL,
 		buttonStyle(false, false, false, emojiRepo),
 	))
@@ -86,14 +86,14 @@ func groupWelcomeButtons(username, group string) *telegram.ReplyInlineMarkup {
 	keyboard := telegram.NewKeyboard()
 	if username != "" {
 		keyboard.AddRow(styledURL(
-			"📖 ʜᴇʟᴘ & ᴄᴏᴍᴍᴀɴᴅs",
+			"ʜᴇʟᴘ & ᴄᴏᴍᴍᴀɴᴅs",
 			"https://t.me/"+username+"?start=help",
 			buttonStyle(true, false, false, emojiHelp),
 		))
 	}
 	keyboard.AddRow(
-		styledURL("➕ ᴀᴅᴅ ᴛᴏ ɢʀᴏᴜᴘ", "https://t.me/"+username+"?startgroup=true", buttonStyle(false, false, false, emojiAdd)),
-		styledURL("💬 sᴜᴘᴘᴏʀᴛ", "https://t.me/"+group, buttonStyle(false, false, false, emojiChat)),
+		styledURL("ᴀᴅᴅ ᴛᴏ ɢʀᴏᴜᴘ", "https://t.me/"+username+"?startgroup=true", buttonStyle(false, false, false, emojiAdd)),
+		styledURL("sᴜᴘᴘᴏʀᴛ", "https://t.me/"+group, buttonStyle(false, false, false, emojiChat)),
 	)
 	return keyboard.Build()
 }
@@ -101,22 +101,22 @@ func groupWelcomeButtons(username, group string) *telegram.ReplyInlineMarkup {
 func helpButtons(showAdmin bool) *telegram.ReplyInlineMarkup {
 	keyboard := telegram.NewKeyboard()
 	keyboard.AddRow(
-		styledData("🎵 ᴘʟᴀʏʙᴀᴄᴋ", "commands_playback", buttonStyle(true, false, false, emojiMusicNote)),
-		styledData("🛠️ ᴛᴏᴏʟs & ɪɴꜰᴏ", "commands_tools", buttonStyle(false, false, false, emojiTools)),
+		styledData("ᴘʟᴀʏʙᴀᴄᴋ", "commands_playback", buttonStyle(true, false, false, emojiMusicNote)),
+		styledData("ᴛᴏᴏʟs & ɪɴꜰᴏ", "commands_tools", buttonStyle(false, false, false, emojiTools)),
 	)
 	if showAdmin {
 		keyboard.AddRow(styledData(
-			"🔐 ᴀᴅᴍɪɴ & sᴜᴅᴏ",
+			"ᴀᴅᴍɪɴ & sᴜᴅᴏ",
 			"commands_admin",
 			buttonStyle(true, false, false, emojiKey),
 		))
 	}
 	keyboard.AddRow(styledData(
-		"📋 ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs (ᴅʀᴏᴘᴅᴏᴡɴs)",
+		"ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs (ᴅʀᴏᴘᴅᴏᴡɴs)",
 		"commands_all_dropdown",
 		buttonStyle(false, false, true, emojiHelp),
 	))
-	keyboard.AddRow(styledData("🏠 ʜᴏᴍᴇ", "commands_home", buttonStyle(false, false, false, emojiHome)))
+	keyboard.AddRow(styledData("ʜᴏᴍᴇ", "commands_home", buttonStyle(false, false, false, emojiHome)))
 	return keyboard.Build()
 }
 
@@ -139,6 +139,6 @@ func playbackButtons(paused bool, progressText string) *telegram.ReplyInlineMark
 	if progressText != "" {
 		keyboard.AddRow(telegram.Button.Disabled(progressText))
 	}
-	keyboard.AddRow(styledData("✖ ᴄʟᴏsᴇ", "np:close", buttonStyle(false, true, false, emojiClose)))
+	keyboard.AddRow(styledData("ᴄʟᴏsᴇ", "np:close", buttonStyle(false, true, false, emojiClose)))
 	return keyboard.Build()
 }

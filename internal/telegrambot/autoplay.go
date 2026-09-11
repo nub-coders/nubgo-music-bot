@@ -290,7 +290,7 @@ func suggestionButtons(suggestions []media.Suggestion, autoplayEnabled bool, pre
 			continue
 		}
 		keyboard.AddRow(styledData(
-			"▶️ "+trimButtonText(suggestionDisplayTitle(suggestion)),
+			trimButtonText(suggestionDisplayTitle(suggestion)),
 			prefix+"sgplay_"+suggestion.VideoID,
 			buttonStyle(false, false, false, emojiPlay),
 		))

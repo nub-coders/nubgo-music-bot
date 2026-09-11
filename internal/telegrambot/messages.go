@@ -69,7 +69,7 @@ func richKVTable(pairs [][2]string) string {
 
 func helpBackButtons() *telegram.ReplyInlineMarkup {
 	kb := telegram.NewKeyboard()
-	kb.AddRow(styledData("◀️ ʙᴀᴄᴋ", "commands_all", buttonStyle(false, false, false, emojiBack)))
+	kb.AddRow(styledData("ʙᴀᴄᴋ", "commands_all", buttonStyle(false, false, false, emojiBack)))
 	return kb.Build()
 }
 
