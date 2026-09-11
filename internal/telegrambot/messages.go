@@ -124,6 +124,7 @@ func helpCategoryPage(cat string, showAdmin bool) (string, *telegram.ReplyInline
 		{emoji(emojiRefresh, "🔄") + " " + cmdMark("/shuffle"), "sʜᴜꜰʟᴇ ǫᴜᴇᴜᴇ"},
 		{emoji(emojiNext, "➡️") + " " + cmdMark("/seek <sec>") + " " + richCode("/seekback"), "ᴊᴜᴍᴘ ꜰᴏʀᴡᴀʀᴅ / ʙᴀᴄᴋᴡᴀʀᴅ"},
 		{emoji(emojiLoop, "🔄") + " " + cmdMark("/loop <off|track|queue>"), "ʟᴏᴏᴘ ᴍᴏᴅᴇ"},
+		{emoji(emojiSettings, "⚙️") + " " + cmdMark("/autoplay") + " " + richCode("on|off"), "ᴘʟᴀʏ ʀᴇʟᴀᴛᴇᴅ sᴏɴɢs ᴡʜᴇɴ ᴛʜᴇ ǫᴜᴇᴜᴇ ᴇɴᴅs"},
 		{emoji(emojiMic, "🎤") + " " + cmdMark("/play <query|url>"), "ʏᴏᴜᴛᴜʙᴇ / sᴘᴏᴛɪꜰʏ / ᴅɪʀᴇᴄᴛ ᴜʀʟs"},
 	}
 

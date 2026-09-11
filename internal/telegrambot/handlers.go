@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type Handlers struct {
 	auth         *Authorizer
 	store        storage.Access
 	sources      *media.Sources
+	related      *media.RelatedResolver
 	botID        int64
 	ownerID      int64
 	supportGroup string
@@ -35,10 +37,19 @@ type Handlers struct {
 	npMessages map[int64]int32              // playback chatID -> now-playing message ID
 	npLocks    map[int64]*sync.Mutex        // playback chatID -> card serialization lock
 	npProgress map[int64]context.CancelFunc // playback chatID -> progress loop cancel
+
+	// Autoplay suggestion state. Cards live in the UI chat; the countdown and
+	// the candidate list are keyed by the playback chat.
+	autoplayCards       map[int64]int32              // playback chatID -> suggestion card message ID
+	autoplayCancels     map[int64]context.CancelFunc // playback chatID -> countdown cancel
+	autoplaySuggestions map[int64][]media.Suggestion // playback chatID -> last suggestions
 	// Channel playback (/cplay) streams into a chat linked to the one the
 	// command was sent in, so cards and buttons stay where the user is.
 	uiChats       map[int64]int64 // playback chatID -> chat the cards live in
 	playbackChats map[int64]int64 // command chatID -> playback chatID
+
+	// recentPlayed tracks video IDs played in each chat to avoid autoplay loops.
+	recentPlayed map[int64][]string
 
 	voice *voice.Manager
 }
@@ -49,11 +60,16 @@ func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorize
 	}
 	return &Handlers{
 		bot: bot, player: player, auth: auth, store: store, sources: sources,
-		botID: botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
+		related: &media.RelatedResolver{Client: &http.Client{Timeout: 15 * time.Second}},
+		botID:   botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
 		started: time.Now(), npMessages: make(map[int64]int32), voice: voice,
 		npLocks:    make(map[int64]*sync.Mutex),
 		npProgress: make(map[int64]context.CancelFunc),
 		uiChats:    make(map[int64]int64), playbackChats: make(map[int64]int64),
+		recentPlayed:        make(map[int64][]string),
+		autoplayCards:       make(map[int64]int32),
+		autoplayCancels:     make(map[int64]context.CancelFunc),
+		autoplaySuggestions: make(map[int64][]media.Suggestion),
 	}
 }
 
@@ -122,9 +138,23 @@ func (h *Handlers) Register() {
 	h.bot.OnCommand("setwelcome", h.setWelcome, telegram.IsGroup)
 	h.bot.OnCommand("welcome", h.welcome, telegram.IsGroup)
 
+	// Autoplay / related-suggestion commands. The channel (linked-chat) variants
+	// map through controlChatID the same way the play commands do.
+	h.bot.OnCommand("autoplay", h.autoplay, telegram.IsGroup)
+	h.bot.OnCommand("cautoplay", h.autoplay, telegram.IsGroup)
+	h.bot.OnCommand("suggest", h.autoplay, telegram.IsGroup)
+	h.bot.OnCommand("csuggest", h.autoplay, telegram.IsGroup)
+
 	// Inline control buttons on the now-playing card and rich help cards.
 	h.bot.AddCallbackHandler("np:", h.onNPButton, telegram.IsGroup)
 	h.bot.OnCallback("commands_", h.commandsCallback)
+
+	// Suggestion-card buttons. Patterns are anchored regexes, and the optional
+	// leading "c" selects the channel-mode variants.
+	h.bot.OnCallback("^c?sgplay_", h.onSuggestionPlay)
+	h.bot.OnCallback("^c?sgstop$", h.onSuggestionStop)
+	h.bot.OnCallback("^c?sgtoggle$", h.onSuggestionToggle)
+	h.bot.OnCallback("^c?sgclose$", h.onSuggestionClose)
 }
 
 // -- /play, /vplay and their force / channel variants ------------------------
@@ -385,6 +415,10 @@ func (h *Handlers) skip(m *telegram.NewMessage) error {
 		return nil
 	}
 	if track == nil {
+		if h.player.AutoplayEnabled(targetChatID) {
+			_, _ = replyRich(m, richNote(emoji(emojiSkip, "⏭️")+" <b>ǫᴜᴇᴜᴇ ɪs ᴇᴍᴘᴛʏ — ᴀᴜᴛᴏᴘʟᴀʏɪɴɢ ᴀ ʀᴇʟᴀᴛᴇᴅ ᴛʀᴀᴄᴋ…</b>"), htmlOptions())
+			return nil
+		}
 		_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Queue ended.</b>", htmlOptions())
 		h.closeNowPlaying(targetChatID)
 		return nil
@@ -683,11 +717,18 @@ func (h *Handlers) TrackStarted(chatID int64, track media.Track) {
 	if h.voice != nil {
 		h.voice.RecordPlay(chatID)
 	}
+	h.recordRecentPlay(chatID, track.ID)
 	h.postNowPlaying(chatID)
 	h.startProgress(chatID, track)
 }
 func (h *Handlers) QueueEnded(chatID int64) {
 	h.closeNowPlaying(chatID)
+}
+func (h *Handlers) QueueDrained(chatID int64, lastTrack media.Track) {
+	// The last track has finished, so its control card is stale. Drop it before
+	// the suggestion card appears so the chat never shows two competing cards.
+	h.closeNowPlaying(chatID)
+	go h.handleAutoplay(chatID, lastTrack)
 }
 func (h *Handlers) PlaybackError(chatID int64, err error) {
 	h.logger.Error("playback error", "chat_id", chatID, "error", err)

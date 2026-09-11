@@ -30,6 +30,7 @@ type Voice interface {
 
 type Observer interface {
 	TrackStarted(chatID int64, track media.Track)
+	QueueDrained(chatID int64, track media.Track)
 	QueueEnded(chatID int64)
 	PlaybackError(chatID int64, err error)
 }
@@ -54,6 +55,7 @@ type Service struct {
 	logger   *slog.Logger
 	mu       sync.RWMutex
 	sessions map[int64]*chatSession
+	autoplay map[int64]bool
 	observer Observer
 }
 
@@ -109,10 +111,34 @@ func New(resolver media.Resolver, voice Voice, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{resolver: resolver, voice: voice, logger: logger, sessions: make(map[int64]*chatSession)}
+	return &Service{
+		resolver: resolver,
+		voice:    voice,
+		logger:   logger,
+		sessions: make(map[int64]*chatSession),
+		autoplay: make(map[int64]bool),
+	}
 }
 
 func (s *Service) SetObserver(observer Observer) { s.observer = observer }
+
+// AutoplayEnabled reports whether a chat should continue with a related track
+// when its queue drains. Autoplay is enabled by default for every chat.
+func (s *Service) AutoplayEnabled(chatID int64) bool {
+	s.mu.RLock()
+	enabled, ok := s.autoplay[chatID]
+	s.mu.RUnlock()
+	return !ok || enabled
+}
+
+// SetAutoplay changes the per-chat autoplay preference. A disabled chat leaves
+// the voice call as soon as its queue drains; an enabled chat keeps the call
+// connected so the next track can replace the stream source seamlessly.
+func (s *Service) SetAutoplay(chatID int64, enabled bool) {
+	s.mu.Lock()
+	s.autoplay[chatID] = enabled
+	s.mu.Unlock()
+}
 
 func (s *Service) Enqueue(ctx context.Context, chatID int64, input string, video bool, requesterID int64, requesterName string) (EnqueueResult, error) {
 	track, err := s.resolver.Resolve(ctx, input, video)
@@ -482,6 +508,18 @@ func (c *chatSession) advance(natural bool) (*media.Track, error) {
 		next = &value
 	}
 	if next == nil {
+		// Both a natural track end and an explicit /skip land here (an explicit
+		// /stop or /end tears the call down directly via stopCommand). When
+		// autoplay is on the call stays connected and the observer is asked for a
+		// related track, so the handler can swap stream sources without rejoining.
+		if c.service.AutoplayEnabled(c.chatID) {
+			c.current = nil
+			c.queue = nil
+			c.paused = false
+			c.position = 0
+			c.notifyQueueDrained(previous)
+			return nil, nil
+		}
 		if err := c.stop(); err != nil {
 			return nil, err
 		}
@@ -591,6 +629,16 @@ func (c *chatSession) notifyTrackStarted(track media.Track) {
 func (c *chatSession) notifyQueueEnded() {
 	if observer := c.service.observer; observer != nil {
 		go observer.QueueEnded(c.chatID)
+	}
+}
+
+// notifyQueueDrained fires when autoplay is enabled and the queue drains (a
+// natural track end or an explicit /skip of the last track). The caller
+// (advance) already cleared current/queue; this callback lets the handler
+// resolve and enqueue a related track without re-joining the voice call.
+func (c *chatSession) notifyQueueDrained(previous media.Track) {
+	if observer := c.service.observer; observer != nil {
+		go observer.QueueDrained(c.chatID, previous)
 	}
 }
 func (c *chatSession) notifyError(err error) {
