@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 )
 
@@ -126,9 +126,27 @@ func (h *Handlers) suggestionPrefix(chatID int64) string {
 // suggestion card, and after the countdown enqueues the top result. It runs on
 // its own goroutine, never on the playback session's goroutine.
 func (h *Handlers) handleAutoplay(chatID int64, lastTrack media.Track) {
+	h.logger.Info("handleAutoplay triggered", "chat_id", chatID, "track_title", lastTrack.Title, "track_id", lastTrack.ID)
 	// A chat that disabled autoplay between the drain and this call should leave
 	// the voice call instead of lingering connected with nothing playing.
-	if !h.player.AutoplayEnabled(chatID) || strings.TrimSpace(lastTrack.ID) == "" {
+	if !h.player.AutoplayEnabled(chatID) {
+		h.logger.Info("autoplay disabled for chat, leaving call", "chat_id", chatID)
+		h.leaveDrainedCall(chatID)
+		return
+	}
+
+	seedID := strings.TrimSpace(lastTrack.ID)
+	if seedID == "" {
+		seedID = media.ExtractYouTubeVideoID(lastTrack.OriginalInput)
+	}
+	if seedID == "" {
+		seedID = media.ExtractYouTubeVideoID(lastTrack.StreamURL)
+	}
+	if seedID != "" {
+		lastTrack.ID = seedID
+	}
+	if seedID == "" && strings.TrimSpace(lastTrack.Title) == "" {
+		h.logger.Warn("autoplay: no seed video id or title available", "chat_id", chatID)
 		h.leaveDrainedCall(chatID)
 		return
 	}
@@ -137,7 +155,9 @@ func (h *Handlers) handleAutoplay(chatID int64, lastTrack media.Track) {
 	defer cancel()
 
 	exclude := h.recentPlaySet(chatID)
-	exclude[lastTrack.ID] = struct{}{}
+	if lastTrack.ID != "" {
+		exclude[lastTrack.ID] = struct{}{}
+	}
 
 	suggestions, err := h.related.Related(ctx, lastTrack, exclude, 5)
 	if err != nil || len(suggestions) == 0 {
@@ -147,9 +167,13 @@ func (h *Handlers) handleAutoplay(chatID int64, lastTrack media.Track) {
 	}
 
 	// Remember the seed and every candidate so the next drain avoids them all.
-	h.recordRecentPlay(chatID, lastTrack.ID)
+	if lastTrack.ID != "" {
+		h.recordRecentPlay(chatID, lastTrack.ID)
+	}
 	for _, suggestion := range suggestions {
-		h.recordRecentPlay(chatID, suggestion.VideoID)
+		if suggestion.VideoID != "" {
+			h.recordRecentPlay(chatID, suggestion.VideoID)
+		}
 	}
 
 	uiChatID := h.uiChatFor(chatID)
@@ -164,10 +188,11 @@ func (h *Handlers) handleAutoplay(chatID int64, lastTrack media.Track) {
 	markup := suggestionButtons(suggestions, true, prefix)
 	sent, err := sendRich(h.bot, uiChatID, suggestionCardText(suggestions, true), &telegram.SendOptions{ReplyMarkup: markup})
 	if err != nil || sent == nil {
-		h.logger.Warn("autoplay: failed to post suggestion card", "chat_id", chatID, "error", err)
+		h.logger.Warn("autoplay: failed to post suggestion card", "chat_id", chatID, "ui_chat_id", uiChatID, "error", err)
 		h.leaveDrainedCall(chatID)
 		return
 	}
+	h.logger.Info("autoplay suggestion card posted", "chat_id", chatID, "message_id", sent.ID, "suggestions_count", len(suggestions))
 	h.setAutoplayCard(chatID, sent.ID)
 	h.setAutoplaySuggestions(chatID, suggestions)
 
@@ -270,9 +295,11 @@ func suggestionTable(suggestions []media.Suggestion) string {
 		if strings.TrimSpace(suggestion.Author) != "" {
 			artist = "<i>" + escape(suggestion.Author) + "</i>"
 		}
+		title := escape(suggestionDisplayTitle(suggestion))
+		titleCell := "<b>" + emoji(emojiPlay, "▶️") + " " + title + "</b>"
 		rows = append(rows, []string{
 			keycap(index + 1),
-			"<b>" + escape(suggestionDisplayTitle(suggestion)) + "</b>",
+			titleCell,
 			artist,
 			length,
 		})
@@ -280,21 +307,11 @@ func suggestionTable(suggestions []media.Suggestion) string {
 	return richTable([]string{"#", "ᴛɪᴛʟᴇ", "ᴀʀᴛɪsᴛ", "ʟᴇɴɢᴛʜ"}, rows)
 }
 
-// suggestionButtons renders one tap-to-play row per candidate followed by the
-// stop / autoplay-toggle controls and a close row, mirroring the Python bot's
-// suggestion_markup.
+// suggestionButtons mirrors Buttons.suggestion_markup from nub-music-bot:
+// controls only (Stop, Autoplay Toggle, Close), omitting song candidates from normal buttons.
 func suggestionButtons(suggestions []media.Suggestion, autoplayEnabled bool, prefix string) *telegram.ReplyInlineMarkup {
+	_ = suggestions
 	keyboard := telegram.NewKeyboard()
-	for _, suggestion := range suggestions {
-		if strings.TrimSpace(suggestion.VideoID) == "" {
-			continue
-		}
-		keyboard.AddRow(styledData(
-			trimButtonText(suggestionDisplayTitle(suggestion)),
-			prefix+"sgplay_"+suggestion.VideoID,
-			buttonStyle(false, false, false, emojiPlay),
-		))
-	}
 	autoplayText := "ᴀᴜᴛᴏᴘʟᴀʏ: ᴏꜰꜰ"
 	if autoplayEnabled {
 		autoplayText = "ᴀᴜᴛᴏᴘʟᴀʏ: ᴏɴ"

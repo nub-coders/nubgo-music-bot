@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/storage"
 )
 

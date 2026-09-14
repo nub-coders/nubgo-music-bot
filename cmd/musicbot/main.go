@@ -12,7 +12,7 @@ import (
 
 	"net/http"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/config"
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 	"github.com/nub-coders/nub-go-music-bot/internal/playback"
@@ -137,7 +137,7 @@ func main() {
 	player := playback.New(resolver, voiceManager, logger)
 	voiceManager.SetHandlers(player.NotifyStreamEnd, player.NotifyFailure)
 	authorizer := telegrambot.NewAuthorizer(bot, store, botUser.ID, cfg.OwnerID)
-	handlers := telegrambot.NewHandlers(bot, player, authorizer, store, sources, botUser.ID, cfg.OwnerID, cfg.SupportGroup, cfg.MediaResolveTimeout, logger, voiceManager, filepath.Join(cfg.CacheDirectory, "welcome"), filepath.Join(cfg.AssetsDirectory, "music.jpg"))
+	handlers := telegrambot.NewHandlers(bot, player, authorizer, store, sources, botUser.ID, cfg.OwnerID, cfg.SupportGroup, cfg.MediaResolveTimeout, logger, voiceManager, filepath.Join(cfg.CacheDirectory, "welcome"), filepath.Join(cfg.AssetsDirectory, "music.jpg"), cfg.BotToken, cfg.CacheDirectory)
 	player.SetObserver(handlers)
 	handlers.Register()
 

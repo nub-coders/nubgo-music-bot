@@ -81,7 +81,7 @@ func Load() (Config, error) {
 		DatabaseName:           envOr("DB_NAME", "musicbot"),
 		LoggerID:               loggerID,
 		InitialAdminIDs:        parseIDList(os.Getenv("INITIAL_ADMIN_IDS")),
-		YTCookiesFile:          strings.TrimSpace(os.Getenv("YT_COOKIES_FILE")),
+		YTCookiesFile:          resolveCookiesFile(os.Getenv("YT_COOKIES_FILE"), cwd),
 		YouTubeAPIKeys:         parseStringList(os.Getenv("YOUTUBE_API_KEYS")),
 		NUBAPIToken:            firstNonEmpty("YTUBE_API_TOKEN", "YT_API_TOKEN"),
 		NUBAPIBaseURL:          firstNonEmptyOr("https://api.nubcoders.com", "YTUBE_API_BASE_URL", "NUB_YT_API_BASE_URL"),
@@ -250,4 +250,21 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func resolveCookiesFile(explicit, cwd string) string {
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		return trimmed
+	}
+	candidates := []string{
+		filepath.Join(cwd, "cookies.txt"),
+		"/root/ytube_api/cookies.txt",
+		"/root/test/cookies.txt",
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && fi.Size() > 0 {
+			return c
+		}
+	}
+	return ""
 }

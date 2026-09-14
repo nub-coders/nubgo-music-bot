@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 	"github.com/nub-coders/nub-go-music-bot/internal/voice/ntg"
 )
@@ -66,15 +66,28 @@ func (m *Manager) RegisterAssistant(assistant *Assistant) {
 	m.mu.Unlock()
 
 	assistant.Calls.OnStreamEnd(func(chatID int64, streamType ntg.StreamType, device ntg.StreamDevice) {
-		if chatID == 0 || streamType != ntg.AudioStream || device != ntg.MicrophoneStream {
+		m.logger.Info("NTgCalls OnStreamEnd event", "chat_id", chatID, "stream_type", streamType, "device", device)
+		if chatID == 0 {
 			return
 		}
 		m.mu.RLock()
-		active := m.sessions[chatID] != nil
+		targetChatID := chatID
+		session := m.sessions[chatID]
+		if session == nil {
+			normID := normalizeChatID(chatID)
+			if s, ok := m.sessions[normID]; ok {
+				session = s
+				targetChatID = normID
+			}
+		}
+		active := session != nil
 		handler := m.onStreamEnd
 		m.mu.RUnlock()
 		if active && handler != nil {
-			handler(chatID)
+			m.logger.Info("dispatching OnStreamEnd to handler", "chat_id", targetChatID)
+			handler(targetChatID)
+		} else {
+			m.logger.Warn("OnStreamEnd not dispatched", "chat_id", chatID, "active", active, "has_handler", handler != nil)
 		}
 	})
 	assistant.Calls.OnConnectionChange(func(chatID int64, info ntg.NetworkInfo) {

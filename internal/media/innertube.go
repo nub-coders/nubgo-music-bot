@@ -36,6 +36,7 @@ type innerTubeClient struct {
 	Header      string
 	UserAgent   string
 	SDK         int
+	VisitorData string
 	DeviceMake  string
 	DeviceModel string
 	OSName      string
@@ -44,7 +45,7 @@ type innerTubeClient struct {
 
 var innerTubeClients = []innerTubeClient{
 	{Name: "ANDROID", Version: "20.10.38", Header: "3", UserAgent: "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip", SDK: 30},
-	{Name: "ANDROID_VR", Version: "1.65.10", Header: "28", UserAgent: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L) gzip", SDK: 32, DeviceMake: "Oculus", DeviceModel: "Quest 3", OSName: "Android", OSVersion: "12L"},
+	{Name: "ANDROID_VR", Version: "1.65.10", Header: "28", UserAgent: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip", SDK: 32, DeviceMake: "Oculus", DeviceModel: "Quest 3", OSName: "Android", OSVersion: "12L"},
 }
 
 func (r *InnerTubeResolver) Resolve(ctx context.Context, input string, video bool) (Track, error) {
@@ -56,15 +57,24 @@ func (r *InnerTubeResolver) Resolve(ctx context.Context, input string, video boo
 			return Track{}, err
 		}
 	}
-	var failures []error
-	for _, client := range innerTubeClients {
-		track, err := r.player(ctx, videoID, input, video, client)
-		if err == nil {
-			return track, nil
-		}
-		failures = append(failures, fmt.Errorf("%s: %w", client.Name, err))
+	// Try ANDROID client first
+	androidClient := innerTubeClients[0]
+	track, visitorData, err := r.player(ctx, videoID, input, video, androidClient)
+	if err == nil {
+		return track, nil
 	}
-	return Track{}, fmt.Errorf("InnerTube resolution failed: %w", errors.Join(failures...))
+
+	// Try ANDROID_VR client with visitorData
+	vrClient := innerTubeClients[1]
+	if visitorData != "" {
+		vrClient.VisitorData = visitorData
+	}
+	track, _, vrErr := r.player(ctx, videoID, input, video, vrClient)
+	if vrErr == nil {
+		return track, nil
+	}
+
+	return Track{}, fmt.Errorf("InnerTube resolution failed: ANDROID: %v; ANDROID_VR: %v", err, vrErr)
 }
 
 func (r *InnerTubeResolver) search(ctx context.Context, query string) (string, error) {
@@ -84,9 +94,12 @@ func (r *InnerTubeResolver) search(ctx context.Context, query string) (string, e
 	return videoID, nil
 }
 
-func (r *InnerTubeResolver) player(ctx context.Context, videoID, original string, video bool, client innerTubeClient) (Track, error) {
+func (r *InnerTubeResolver) player(ctx context.Context, videoID, original string, video bool, client innerTubeClient) (Track, string, error) {
 	payload := map[string]any{"context": map[string]any{"client": innerTubeClientPayload(client)}, "videoId": videoID}
 	var response struct {
+		ResponseContext struct {
+			VisitorData string `json:"visitorData"`
+		} `json:"responseContext"`
 		PlayabilityStatus struct {
 			Status string `json:"status"`
 			Reason string `json:"reason"`
@@ -114,10 +127,11 @@ func (r *InnerTubeResolver) player(ctx context.Context, videoID, original string
 		} `json:"streamingData"`
 	}
 	if err := r.post(ctx, "player", client, payload, &response); err != nil {
-		return Track{}, err
+		return Track{}, "", err
 	}
+	visitorData := response.ResponseContext.VisitorData
 	if response.PlayabilityStatus.Status != "OK" {
-		return Track{}, fmt.Errorf("video is not playable (%s: %s)", response.PlayabilityStatus.Status, response.PlayabilityStatus.Reason)
+		return Track{}, visitorData, fmt.Errorf("video is not playable (%s: %s)", response.PlayabilityStatus.Status, response.PlayabilityStatus.Reason)
 	}
 	var streamURL string
 	var bestBitrate int64
@@ -133,10 +147,10 @@ func (r *InnerTubeResolver) player(ctx context.Context, videoID, original string
 		streamURL, bestBitrate = format.URL, format.Bitrate
 	}
 	if streamURL == "" {
-		return Track{}, errors.New("InnerTube returned no progressive stream")
+		return Track{}, visitorData, errors.New("InnerTube returned no progressive stream")
 	}
 	if _, err := r.Guard.Validate(ctx, streamURL); err != nil {
-		return Track{}, fmt.Errorf("validate InnerTube stream: %w", err)
+		return Track{}, visitorData, fmt.Errorf("validate InnerTube stream: %w", err)
 	}
 	durationSeconds, _ := strconv.ParseInt(response.VideoDetails.LengthSeconds, 10, 64)
 	thumbnail := ""
@@ -151,7 +165,7 @@ func (r *InnerTubeResolver) player(ctx context.Context, videoID, original string
 		OriginalInput: original, StreamURL: streamURL, Kind: SourceYouTube, Video: video,
 		Live:       response.VideoDetails.IsLive || response.VideoDetails.IsLiveContent,
 		ResolvedAt: time.Now(),
-	}, nil
+	}, visitorData, nil
 }
 
 func (r *InnerTubeResolver) post(ctx context.Context, endpoint string, client innerTubeClient, payload any, target any) error {
@@ -165,8 +179,7 @@ func (r *InnerTubeResolver) post(ctx context.Context, endpoint string, client in
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-YouTube-Client-Name", client.Header)
-	request.Header.Set("X-YouTube-Client-Version", client.Version)
+	request.Header.Set("X-Youtube-Client-Name", client.Header)
 	request.Header.Set("User-Agent", client.UserAgent)
 	httpClient := r.Client
 	if httpClient == nil {
@@ -185,6 +198,9 @@ func (r *InnerTubeResolver) post(ctx context.Context, endpoint string, client in
 
 func innerTubeClientPayload(client innerTubeClient) map[string]any {
 	payload := map[string]any{"clientName": client.Name, "clientVersion": client.Version, "androidSdkVersion": client.SDK, "hl": "en", "gl": "US"}
+	if client.VisitorData != "" {
+		payload["visitorData"] = client.VisitorData
+	}
 	if client.DeviceMake != "" {
 		payload["deviceMake"] = client.DeviceMake
 		payload["deviceModel"] = client.DeviceModel
@@ -192,6 +208,10 @@ func innerTubeClientPayload(client innerTubeClient) map[string]any {
 		payload["osVersion"] = client.OSVersion
 	}
 	return payload
+}
+
+func ExtractYouTubeVideoID(value string) string {
+	return extractYouTubeVideoID(value)
 }
 
 func extractYouTubeVideoID(value string) string {

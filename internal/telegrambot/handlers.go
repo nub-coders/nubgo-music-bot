@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 	"github.com/nub-coders/nub-go-music-bot/internal/playback"
 	"github.com/nub-coders/nub-go-music-bot/internal/storage"
@@ -31,6 +31,8 @@ type Handlers struct {
 	supportGroup string
 	logoDir      string
 	fallbackLogo string
+	botToken     string
+	cacheDir     string
 	logger       *slog.Logger
 	timeout      time.Duration
 	started      time.Time
@@ -56,7 +58,7 @@ type Handlers struct {
 	voice *voice.Manager
 }
 
-func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger, voice *voice.Manager, logoDir, fallbackLogo string) *Handlers {
+func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorizer, store storage.Access, sources *media.Sources, botID, ownerID int64, supportGroup string, timeout time.Duration, logger *slog.Logger, voice *voice.Manager, logoDir, fallbackLogo, botToken, cacheDir string) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -64,7 +66,7 @@ func NewHandlers(bot *telegram.Client, player *playback.Service, auth *Authorize
 		bot: bot, player: player, auth: auth, store: store, sources: sources,
 		related: &media.RelatedResolver{Client: &http.Client{Timeout: 15 * time.Second}},
 		botID:   botID, ownerID: ownerID, supportGroup: supportGroup, timeout: timeout, logger: logger,
-		logoDir: logoDir, fallbackLogo: fallbackLogo,
+		logoDir: logoDir, fallbackLogo: fallbackLogo, botToken: botToken, cacheDir: cacheDir,
 		started: time.Now(), npMessages: make(map[int64]int32), voice: voice,
 		npLocks:    make(map[int64]*sync.Mutex),
 		npProgress: make(map[int64]context.CancelFunc),
@@ -158,6 +160,15 @@ func (h *Handlers) Register() {
 	// Inline control buttons on the now-playing card and rich help cards.
 	h.bot.AddCallbackHandler("np:", h.onNPButton, telegram.IsGroup)
 	h.bot.OnCallback("commands_", h.commandsCallback)
+
+	// Direct callback buttons from now-playing and queue cards (matching nub-music-bot).
+	h.bot.OnCallback("^(?:c)?(?:resume|pause|skip|end|stop|close)$", h.onNPButton)
+	h.bot.OnCallback("^(?:c)?add_to_pl$", h.onNPButton)
+	h.bot.OnCallback("^pl_add_", h.onPlaylistAdd)
+	h.bot.OnCallback("^pl_quick_fav_", h.onPlaylistQuickFav)
+	h.bot.OnCallback("^close_pl_selector$", h.onPlaylistCloseSelector)
+	h.bot.OnCallback("^(?:c)?playnow_", h.onNPButton)
+	h.bot.OnCallback("^(?:c)?noop$", h.onNPButton)
 
 	// Suggestion-card buttons. Patterns are anchored regexes, and the optional
 	// leading "c" selects the channel-mode variants.
@@ -319,7 +330,17 @@ func (h *Handlers) playEntries(m *telegram.NewMessage, video bool, entries []med
 	// The now-playing card already announces the started track, so the status
 	// message is only kept when it still carries queue information. Otherwise it
 	// is deleted to avoid posting the same track twice (matches the Python bot).
-	if summary := strings.TrimRight(builder.String(), "\n"); summary != "" {
+	if len(queued) == 1 && started == nil {
+		qResult := queued[0]
+		botUser := ""
+		if h.bot != nil && h.bot.Me() != nil {
+			botUser = h.bot.Me().Username
+		}
+		isChannel := h.uiChatFor(targetChatID) != targetChatID
+		cardText := queueCard(qResult.Track, qResult.Position, botUser)
+		markup := queueButtons(qResult.Track.ID, isChannel)
+		_, _ = editRich(status, cardText, &telegram.SendOptions{ReplyMarkup: markup})
+	} else if summary := strings.TrimRight(builder.String(), "\n"); summary != "" {
 		_, _ = editRich(status, summary, htmlOptions())
 	} else {
 		_, _ = status.Delete()
@@ -403,9 +424,13 @@ func (h *Handlers) pause(m *telegram.NewMessage, paused bool) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	message := emoji(emojiPlay, "▶️") + " <b>Playback resumed.</b>"
+	reqName := "ᴜsᴇʀ"
+	if sender, _ := m.GetSender(); sender != nil && strings.TrimSpace(sender.FirstName) != "" {
+		reqName = strings.TrimSpace(sender.FirstName)
+	}
+	message := msgResumed(reqName)
 	if paused {
-		message = emoji(emojiPause, "⏸️") + " <b>Playback paused.</b>"
+		message = msgPaused(reqName)
 	}
 	_, _ = replyRich(m, message, htmlOptions())
 	h.refreshNowPlaying(targetChatID)
@@ -424,16 +449,20 @@ func (h *Handlers) skip(m *telegram.NewMessage) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
+	reqName := "ᴜsᴇʀ"
+	if sender, _ := m.GetSender(); sender != nil && strings.TrimSpace(sender.FirstName) != "" {
+		reqName = strings.TrimSpace(sender.FirstName)
+	}
 	if track == nil {
 		if h.player.AutoplayEnabled(targetChatID) {
 			_, _ = replyRich(m, richNote(emoji(emojiSkip, "⏭️")+" <b>ǫᴜᴇᴜᴇ ɪs ᴇᴍᴘᴛʏ — ᴀᴜᴛᴏᴘʟᴀʏɪɴɢ ᴀ ʀᴇʟᴀᴛᴇᴅ ᴛʀᴀᴄᴋ…</b>"), htmlOptions())
 			return nil
 		}
-		_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Queue ended.</b>", htmlOptions())
+		_, _ = replyRich(m, msgSkippedEmpty(reqName), htmlOptions())
 		h.closeNowPlaying(targetChatID)
 		return nil
 	}
-	_, _ = replyRich(m, emoji(emojiSkip, "⏭️")+" <b>Now playing:</b> "+formatTrack(*track), htmlOptions())
+	_, _ = replyRich(m, msgSkipping(reqName), htmlOptions())
 	h.refreshNowPlaying(targetChatID)
 	return nil
 }
@@ -449,7 +478,11 @@ func (h *Handlers) stop(m *telegram.NewMessage) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = replyRich(m, emoji(emojiStop, "⏹️")+" <b>Playback stopped and queue cleared.</b>", htmlOptions())
+	reqName := "ᴜsᴇʀ"
+	if sender, _ := m.GetSender(); sender != nil && strings.TrimSpace(sender.FirstName) != "" {
+		reqName = strings.TrimSpace(sender.FirstName)
+	}
+	_, _ = replyRich(m, msgStopped(reqName), htmlOptions())
 	h.closeNowPlaying(targetChatID)
 	return nil
 }
@@ -465,7 +498,12 @@ func (h *Handlers) shuffle(m *telegram.NewMessage) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = replyRich(m, emoji(emojiRefresh, "🔀")+" <b>Queue shuffled.</b>", htmlOptions())
+	snapshot, err := h.player.Snapshot(ctx, targetChatID)
+	count := 0
+	if err == nil {
+		count = len(snapshot.Queue)
+	}
+	_, _ = replyRich(m, msgShuffled(count), htmlOptions())
 	h.refreshNowPlaying(targetChatID)
 	return nil
 }
@@ -510,7 +548,11 @@ func (h *Handlers) seek(m *telegram.NewMessage, forward bool) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = m.Reply(fmt.Sprintf("🎚️ Seeking to <code>%s</code>", formatDuration(offset)), htmlOptions())
+	reqName := "ᴜsᴇʀ"
+	if sender, _ := m.GetSender(); sender != nil && strings.TrimSpace(sender.FirstName) != "" {
+		reqName = strings.TrimSpace(sender.FirstName)
+	}
+	_, _ = replyRich(m, msgSeeked(formatDuration(offset), reqName), htmlOptions())
 	h.refreshNowPlaying(targetChatID)
 	return nil
 }
@@ -550,7 +592,11 @@ func (h *Handlers) loop(m *telegram.NewMessage) error {
 		_, _ = m.Reply("❌ "+html.EscapeString(err.Error()), htmlOptions())
 		return nil
 	}
-	_, _ = replyRich(m, fmt.Sprintf("%s Loop mode set to <code>%s</code>.", emoji(emojiLoop, "🔁"), []string{"off", "track", "queue"}[mode]), htmlOptions())
+	reqName := "ᴜsᴇʀ"
+	if sender, _ := m.GetSender(); sender != nil && strings.TrimSpace(sender.FirstName) != "" {
+		reqName = strings.TrimSpace(sender.FirstName)
+	}
+	_, _ = replyRich(m, msgLooped([]string{"off", "track", "queue"}[mode], reqName), htmlOptions())
 	h.refreshNowPlaying(targetChatID)
 	return nil
 }
@@ -692,30 +738,54 @@ func progressLabel(position, duration time.Duration) string {
 
 func htmlOptions() *telegram.SendOptions { return &telegram.SendOptions{ParseMode: "html"} }
 
+func trimTitle(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-1]) + "…"
+}
+
+
+
 func queueText(snapshot playback.Snapshot) string {
-	var builder strings.Builder
-	builder.WriteString("<b>Now playing</b>\n")
+	var items []media.Track
 	if snapshot.Current != nil {
-		builder.WriteString(formatTrack(*snapshot.Current))
+		items = append(items, *snapshot.Current)
 	}
-	if snapshot.Paused {
-		builder.WriteString(" — <i>paused</i>")
+	items = append(items, snapshot.Queue...)
+	if len(items) == 0 {
+		return richNote(emoji(emojiQueueIcon, "🗃") + " <b>The playback queue is empty.</b>")
 	}
-	if snapshot.Current != nil && snapshot.Current.Duration > 0 {
-		builder.WriteString("\n<code>" + escape(progressLabel(snapshot.Position, snapshot.Current.Duration)) + "</code>")
-	}
-	builder.WriteString(fmt.Sprintf("\n🔁 <code>%s</code>", []string{"off", "track", "queue"}[snapshot.Loop]))
-	for index, track := range snapshot.Queue {
-		if index == 0 {
-			builder.WriteString("\n\n<b>Up next</b>")
-		}
-		if index >= 15 {
-			builder.WriteString(fmt.Sprintf("\n…and %d more", len(snapshot.Queue)-index))
+
+	headers := []string{"#", "ᴛʀᴀᴄᴋ", "ʟᴇɴɢᴛʜ"}
+	var rows [][]string
+	for idx, item := range items {
+		if idx >= 20 {
 			break
 		}
-		builder.WriteString(fmt.Sprintf("\n%d. %s", index+1, formatTrack(track)))
+		dur := "-"
+		if item.Duration > 0 {
+			dur = formatDuration(item.Duration)
+		}
+		title := item.Title
+		if title == "" {
+			title = item.OriginalInput
+		}
+		title = trimTitle(title, 32)
+		posStr := fmt.Sprintf("<b>%d</b>", idx+1)
+		if idx == 0 && snapshot.Current != nil {
+			posStr = "▶️"
+		}
+		rows = append(rows, []string{
+			posStr,
+			escape(title),
+			"<code>" + dur + "</code>",
+		})
 	}
-	return builder.String()
+
+	table := richTable(headers, rows)
+	return fmt.Sprintf("<h1>%s ᴄᴜʀʀᴇɴᴛ ǫᴜᴇᴜᴇ</h1>\n\n%s", emoji(emojiMusicNote, "🎵"), table)
 }
 
 // -- observer callbacks from the playback service ----------------------------

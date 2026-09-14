@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 	"github.com/nub-coders/nub-go-music-bot/internal/storage"
 )
@@ -16,8 +16,17 @@ import (
 
 func (h *Handlers) start(m *telegram.NewMessage) error {
 	username := h.botUsername()
-	if strings.EqualFold(strings.TrimSpace(m.Args()), "help") {
+	args := strings.TrimSpace(m.Args())
+	if strings.EqualFold(args, "help") {
 		return h.help(m)
+	}
+	if strings.HasPrefix(args, "newpl_") {
+		text := fmt.Sprintf("%s <b>ᴄʀᴇᴀᴛᴇ ᴀ ɴᴇᴡ ᴘʟᴀʏʟɪsᴛ</b>\n\n%s <b>To create a playlist, send:</b>\n<code>/playlist new &lt;name&gt;</code>\n\n<b>‣ Rules:</b>\n• <i>Maximum 10 characters</i>\n• <i>Letters &amp; numbers only</i>\n• <i>No spaces, symbols, or special characters</i>\n• <i>Maximum 5 playlists total</i>",
+			emoji(emojiAdd, "➕"),
+			emoji(emojiInfo, "💡"),
+		)
+		_, err := replyRich(m, text, &telegram.SendOptions{})
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

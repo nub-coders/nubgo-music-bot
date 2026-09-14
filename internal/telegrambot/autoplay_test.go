@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
 	"github.com/nub-coders/nub-go-music-bot/internal/media"
 )
 
@@ -43,20 +43,26 @@ func TestSuggestionCardTextNoAutoplay(t *testing.T) {
 
 func TestSuggestionButtonsPayloads(t *testing.T) {
 	data := collectCallbackData(suggestionButtons(sampleSuggestions(), true, ""))
-	for _, want := range []string{"sgplay_aaaaaaaaaaa", "sgplay_bbbbbbbbbbb", "sgstop", "sgtoggle", "sgclose"} {
+	for _, want := range []string{"sgstop", "sgtoggle", "sgclose"} {
 		if !data[want] {
 			t.Errorf("missing callback %q in %v", want, data)
 		}
+	}
+	if data["sgplay_aaaaaaaaaaa"] {
+		t.Error("song candidates should not be in normal inline buttons")
 	}
 	if !strings.Contains(renderButtonTexts(suggestionButtons(sampleSuggestions(), true, "")), "ᴀᴜᴛᴏᴘʟᴀʏ: ᴏɴ") {
 		t.Error("toggle should read ON when enabled")
 	}
 
 	channel := collectCallbackData(suggestionButtons(sampleSuggestions(), false, "c"))
-	for _, want := range []string{"csgplay_aaaaaaaaaaa", "csgstop", "csgtoggle", "csgclose"} {
+	for _, want := range []string{"csgstop", "csgtoggle", "csgclose"} {
 		if !channel[want] {
 			t.Errorf("missing channel callback %q in %v", want, channel)
 		}
+	}
+	if channel["csgplay_aaaaaaaaaaa"] {
+		t.Error("song candidates should not be in normal channel buttons")
 	}
 	if !strings.Contains(renderButtonTexts(suggestionButtons(sampleSuggestions(), false, "c")), "ᴀᴜᴛᴏᴘʟᴀʏ: ᴏꜰꜰ") {
 		t.Error("toggle should read OFF when disabled")

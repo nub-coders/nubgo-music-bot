@@ -89,6 +89,25 @@ func (r *NUBAPIResolver) Resolve(ctx context.Context, input string, video bool) 
 		r.recordFailure()
 		return Track{}, fmt.Errorf("validate NUB API stream: %w", err)
 	}
+
+	// Probe stream URL to ensure it is actually accessible and not returning 403/5xx
+	probeReq, probeErr := http.NewRequestWithContext(ctx, http.MethodGet, payload.StreamURL, nil)
+	if probeErr == nil {
+		probeReq.Header.Set("Range", "bytes=0-1024")
+		probeClient := &http.Client{Timeout: 3 * time.Second}
+		probeResp, probeErr := probeClient.Do(probeReq)
+		if probeErr != nil || (probeResp.StatusCode >= 400 && probeResp.StatusCode != http.StatusRequestedRangeNotSatisfiable) {
+			status := 0
+			if probeResp != nil {
+				status = probeResp.StatusCode
+				probeResp.Body.Close()
+			}
+			r.recordFailure()
+			return Track{}, fmt.Errorf("NUB API stream unreachable: status=%d err=%v", status, probeErr)
+		}
+		probeResp.Body.Close()
+	}
+
 	r.recordSuccess()
 	return Track{
 		ID: payload.VideoID, Title: payload.Title, Author: payload.ChannelName,

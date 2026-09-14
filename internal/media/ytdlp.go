@@ -63,7 +63,7 @@ func (r *YTDLPResolver) Resolve(ctx context.Context, input string, video bool) (
 	if binary == "" {
 		binary = "yt-dlp"
 	}
-	format := "bestaudio/best"
+	format := "bestaudio[ext=m4a]/bestaudio/best"
 	if video {
 		// NTgCalls launches separate FFmpeg readers from one URL, so select a
 		// progressive format containing both audio and video.
@@ -73,7 +73,14 @@ func (r *YTDLPResolver) Resolve(ctx context.Context, input string, video bool) (
 	if !IsHTTPURL(input) {
 		target = "ytsearch1:" + input
 	}
-	args := []string{"--dump-single-json", "--no-warnings", "--no-playlist", "--format", format}
+	args := []string{
+		"--js-runtimes", "node",
+		"--remote-components", "ejs:github",
+		"--dump-single-json",
+		"--no-warnings",
+		"--no-playlist",
+		"--format", format,
+	}
 	if r.CookiesFile != "" {
 		args = append(args, "--cookies", r.CookiesFile)
 	}

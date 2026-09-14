@@ -3,8 +3,8 @@ module github.com/nub-coders/nub-go-music-bot
 go 1.25.0
 
 require (
-	github.com/amarnathcjd/gogram v1.7.10
 	github.com/joho/godotenv v1.5.1
+	github.com/nub-coders/gogram v0.0.0-20260910105843-67f2190ade12
 	go.mongodb.org/mongo-driver v1.17.9
 )
 
@@ -21,4 +21,4 @@ require (
 	golang.org/x/text v0.17.0 // indirect
 )
 
-replace github.com/amarnathcjd/gogram => github.com/nub-coders/gogram v0.0.0-20260910105843-67f2190ade12
+replace github.com/nub-coders/gogram => ./modules/gogram

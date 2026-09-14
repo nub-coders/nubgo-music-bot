@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -80,6 +81,10 @@ type enqueueCommand struct {
 type forceCommand struct {
 	track media.Track
 	resp  chan commandResult
+}
+type playNowCommand struct {
+	trackID string
+	resp    chan commandResult
 }
 type skipCommand struct{ resp chan commandResult }
 type stopCommand struct{ resp chan error }
@@ -180,6 +185,22 @@ func (s *Service) ForcePlay(ctx context.Context, chatID int64, input string, vid
 		return result.enqueue, result.err
 	case <-ctx.Done():
 		return EnqueueResult{}, ctx.Err()
+	}
+}
+
+func (s *Service) PlayNow(ctx context.Context, chatID int64, trackID string) (*media.Track, error) {
+	cmd := playNowCommand{trackID: trackID, resp: make(chan commandResult, 1)}
+	if err := s.sendExisting(ctx, chatID, cmd); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-cmd.resp:
+		if res.err != nil {
+			return nil, res.err
+		}
+		return &res.enqueue.Track, nil
 	}
 }
 
@@ -291,33 +312,65 @@ func (s *Service) Current(ctx context.Context, chatID int64) *media.Track {
 	return snapshot.Current
 }
 
+func normalizeChatID(id int64) int64 {
+	if id > 0 {
+		return -1_000_000_000_000 - id
+	}
+	return id
+}
+
+func (s *Service) findSession(chatID int64) *chatSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sess, ok := s.sessions[chatID]; ok {
+		return sess
+	}
+	normID := normalizeChatID(chatID)
+	if sess, ok := s.sessions[normID]; ok {
+		return sess
+	}
+	strID := fmt.Sprintf("%d", chatID)
+	if strings.HasPrefix(strID, "-100") {
+		var stripped int64
+		if _, err := fmt.Sscanf(strID[4:], "%d", &stripped); err == nil {
+			if sess, ok := s.sessions[stripped]; ok {
+				return sess
+			}
+			if sess, ok := s.sessions[-stripped]; ok {
+				return sess
+			}
+		}
+	}
+	return nil
+}
+
 // NotifyStreamEnd is safe to call from NTgCalls callback goroutines. Unknown and
 // stopped chats are ignored rather than recreating playback state.
 func (s *Service) NotifyStreamEnd(chatID int64) {
-	s.mu.RLock()
-	session := s.sessions[chatID]
-	s.mu.RUnlock()
+	s.logger.Info("playback NotifyStreamEnd received", "chat_id", chatID)
+	session := s.findSession(chatID)
 	if session == nil {
+		s.logger.Warn("playback NotifyStreamEnd session not found", "chat_id", chatID)
 		return
 	}
 	select {
 	case session.commands <- streamEndEvent{}:
+		s.logger.Info("queued streamEndEvent", "chat_id", session.chatID)
 	default:
-		s.logger.Warn("dropping duplicate stream-end event", "chat_id", chatID)
+		s.logger.Warn("dropping duplicate stream-end event", "chat_id", session.chatID)
 	}
 }
 
 func (s *Service) NotifyFailure(chatID int64, err error) {
-	s.mu.RLock()
-	session := s.sessions[chatID]
-	s.mu.RUnlock()
+	s.logger.Warn("playback NotifyFailure received", "chat_id", chatID, "error", err)
+	session := s.findSession(chatID)
 	if session == nil {
 		return
 	}
 	select {
 	case session.commands <- failureEvent{err: err}:
 	default:
-		s.logger.Warn("dropping duplicate voice failure event", "chat_id", chatID)
+		s.logger.Warn("dropping duplicate voice failure event", "chat_id", session.chatID)
 	}
 }
 
@@ -399,6 +452,21 @@ func (c *chatSession) run() {
 			command.resp <- c.enqueue(command.track)
 		case forceCommand:
 			command.resp <- c.forcePlay(command.track)
+		case playNowCommand:
+			var found *media.Track
+			for i, t := range c.queue {
+				if t.ID == command.trackID || strings.Contains(t.OriginalInput, command.trackID) || strings.Contains(t.StreamURL, command.trackID) {
+					target := t
+					found = &target
+					c.queue = append(c.queue[:i], c.queue[i+1:]...)
+					break
+				}
+			}
+			if found != nil {
+				command.resp <- c.forcePlay(*found)
+			} else {
+				command.resp <- commandResult{err: errors.New("track not found in queue")}
+			}
 		case skipCommand:
 			track, err := c.advance(false)
 			command.resp <- commandResult{track: track, err: err}
@@ -421,6 +489,13 @@ func (c *chatSession) run() {
 		case seekCommand:
 			command.resp <- c.seek(command.target)
 		case streamEndEvent:
+			c.service.logger.Info("session processing streamEndEvent",
+				"chat_id", c.chatID,
+				"stopping", c.stopping,
+				"has_current", c.current != nil,
+				"ignore_eof_until", c.ignoreEOFUntil,
+				"is_before_ignore", time.Now().Before(c.ignoreEOFUntil),
+			)
 			if c.stopping || c.current == nil || time.Now().Before(c.ignoreEOFUntil) {
 				continue
 			}
@@ -637,6 +712,7 @@ func (c *chatSession) notifyQueueEnded() {
 // (advance) already cleared current/queue; this callback lets the handler
 // resolve and enqueue a related track without re-joining the voice call.
 func (c *chatSession) notifyQueueDrained(previous media.Track) {
+	c.service.logger.Info("queue drained, notifying observer for autoplay", "chat_id", c.chatID, "track_title", previous.Title, "track_id", previous.ID)
 	if observer := c.service.observer; observer != nil {
 		go observer.QueueDrained(c.chatID, previous)
 	}

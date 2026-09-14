@@ -28,7 +28,10 @@ func (s Suggestion) WatchURL() string {
 	if s.URL != "" {
 		return s.URL
 	}
-	return "https://www.youtube.com/watch?v=" + s.VideoID
+	if s.VideoID != "" {
+		return "https://www.youtube.com/watch?v=" + s.VideoID
+	}
+	return s.Title
 }
 
 // RelatedResolver fetches related-music recommendations for a seed track,
@@ -69,7 +72,11 @@ func (r *RelatedResolver) Related(ctx context.Context, seed Track, exclude map[s
 		seedID = extractYouTubeVideoID(seed.StreamURL)
 	}
 	if seedID == "" {
-		return nil, errors.New("no seed video id for related lookup")
+		query := strings.TrimSpace(seed.Title)
+		if query != "" {
+			return r.search(ctx, "similar music to "+query, limit*3)
+		}
+		return nil, errors.New("no seed video id or title for related lookup")
 	}
 
 	excluded := make(map[string]struct{}, len(exclude)+1)

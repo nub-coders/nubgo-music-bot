@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/nub-coders/gogram/telegram"
+	"github.com/nub-coders/nub-go-music-bot/internal/media"
 )
 
 func richEsc(v any) string { return escape(v) }
@@ -69,7 +70,7 @@ func richKVTable(pairs [][2]string) string {
 
 func helpBackButtons() *telegram.ReplyInlineMarkup {
 	kb := telegram.NewKeyboard()
-	kb.AddRow(styledData("ʙᴀᴄᴋ", "commands_all", buttonStyle(false, false, false, emojiBack)))
+	kb.AddRow(styledData("◀️ ʙᴀᴄᴋ", "commands_all", buttonStyle(false, false, false, emojiBack)))
 	return kb.Build()
 }
 
@@ -102,6 +103,9 @@ func formatWelcome(tmpl, name string, id int64, botname string) string {
 // groupWelcome is the fixed thank-you card sent when the bot is added to a
 // group. adders, groupName and botname arrive as pre-formatted HTML (mentions).
 func groupWelcome(adder, groupName, botname string) string {
+	if botname == "" {
+		botname = "ɴᴜʙ ᴍᴜsɪᴄ ʙᴏᴛ"
+	}
 	return emoji(emojiMusicNote, "🎵") + " <b>ʜᴇʏ " + adder + "!</b> ᴛʜᴀɴᴋs ꜰᴏʀ ᴀᴅᴅɪɴɢ ᴍᴇ ᴛᴏ <b>" + escape(groupName) + "</b> 🎉\n\n" +
 		"ɪ'ᴍ <b>" + botname + "</b> — ʏᴏᴜʀ ᴅᴇᴅɪᴄᴀᴛᴇᴅ ᴍᴜsɪᴄ ʙᴏᴛ.\n\n" +
 		emoji(emojiMusicNotes, "🎶") + " ᴄʀʏsᴛᴀʟ-ᴄʟᴇᴀʀ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ sᴛʀᴇᴀᴍɪɴɢ\n" +
@@ -116,22 +120,109 @@ func startCard(uname, name string) string {
 	if name == "" {
 		name = "there"
 	}
-	heading := richHeading(emoji(emojiUser, "👤")+" ʜᴇʏ "+escape(name)+"!", 1)
-	sub := richHeading(emoji(emojiMusicNote, "🎵")+" ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ɴᴜʙ ᴍᴜsɪᴄ ʙᴏᴛ", 2)
-	intro := "<p><i>ʏᴏᴜʀ ᴜʟᴛɪᴍᴀᴛᴇ ʜɪɢʜ-ǫᴜᴀʟɪᴛʏ ᴍᴜsɪᴄ & ᴠɪᴅᴇᴏ sᴛʀᴇᴀᴍɪɴɢ ʙᴏᴛ ꜰᴏʀ ᴛᴇʟᴇɢʀᴀᴍ!</i></p>"
+	botname := "ɴᴜʙ ᴍᴜsɪᴄ ʙᴏᴛ"
+	return emoji(emojiUser, "👤") + " <b>ʜᴇʏ " + escape(name) + "!</b>\n\n" +
+		emoji(emojiMusicNote, "🎵") + " <b>ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ " + botname + "</b>\n" +
+		"<i>ʏᴏᴜʀ ᴜʟᴛɪᴍᴀᴛᴇ ʜɪɢʜ-ǫᴜᴀʟɪᴛʏ ᴍᴜsɪᴄ &amp; ᴠɪᴅᴇᴏ sᴛʀᴇᴀᴍɪɴɢ ʙᴏᴛ ꜰᴏʀ ᴛᴇʟᴇɢʀᴀᴍ!</i>\n\n" +
+		"✨ <b><u>sᴘᴇᴄɪᴀʟ ꜰᴇᴀᴛᴜʀᴇs</u></b> ✨\n\n" +
+		"• " + emoji(emojiHeadphones, "🎧") + " <b>ᴜʟᴛʀᴀ-ʜᴅ sᴛʀᴇᴀᴍɪɴɢ:</b> <i>ᴄʀʏsᴛᴀʟ-ᴄʟᴇᴀʀ ᴀᴜᴅɪᴏ &amp; ᴠɪᴅᴇᴏ in ɢʀᴏᴜᴘs &amp; ᴄʜᴀɴɴᴇʟs.</i>\n" +
+		"• " + emoji(emojiRocket, "🚀") + " <b>sᴍᴀʀᴛ ᴀᴜᴛᴏᴘʟᴀʏ (" + richCode("/autoplay") + "):</b> <i>ᴀᴜᴛᴏ-ᴘʟᴀʏs ʀᴇʟᴀᴛᴇᴅ sᴏɴɢs sᴏ ᴍᴜsɪᴄ ɴᴇᴠᴇʀ sᴛᴏᴘs.</i>\n" +
+		"• " + emoji(emojiBolt, "⚡️") + " <b>ᴍᴜʟᴛɪ-ᴀssɪsᴛᴀɴᴛ:</b> <i>sᴇᴀᴍʟᴇss ʟᴏᴀᴅ-ʙᴀʟᴀɴᴄɪɴɢ ᴀᴄʀᴏss ᴍᴜʟᴛɪᴘʟᴇ ᴀssɪsᴛᴀɴᴛs.</i>\n" +
+		"• " + emoji(emojiSettings, "⚙️") + " <b>ᴀᴅᴠᴀɴᴄᴇᴅ ᴄᴏɴᴛʀᴏʟs:</b> <i>sᴇᴇᴋ (" + richCode("/seek") + "), ʟᴏᴏᴘ (" + richCode("/loop") + "), ꩖ᴏʀᴄᴇ-ᴘʟᴀʏ &amp; sʜᴜꜰꜰʟᴇ.</i>\n" +
+		"• " + emoji(emojiTools, "🛠️") + " <b>ꜰᴜɴ &amp; ᴜᴛɪʟɪᴛɪᴇs:</b> <i>sᴛɪᴄᴋᴇʀ ᴄʟᴏɴɪɴɢ (" + richCode("/kang") + "), ᴍᴇᴍᴇs (" + richCode("/mmf") + ") &amp; ᴛᴀɢᴀʟʟ.</i>\n\n" +
+		"<b><i>👇 ᴜsᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴs ʙᴇʟᴏᴡ ᴛᴏ ᴇxᴘʟᴏʀᴇ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs!</i></b>"
+}
 
-	ftitle := "<p>✨ <b><u>sᴘᴇᴄɪᴀʟ ꜰᴇᴀᴛᴜʀᴇs</u></b> ✨</p>"
-	ftxt := "<p>"
-	ftxt += "• " + emoji(emojiHeadphones, "🎧") + " <b>ᴜʟᴛʀᴀ-ʜᴅ sᴛʀᴇᴀᴍɪɴɢ:</b> <i>ᴄʀʏsᴛᴀʟ-ᴄʟᴇᴀʀ ᴀᴜᴅɪᴏ & ᴠɪᴅᴇᴏ ɪɴ ɢʀᴏᴜᴘs</i><br/>"
-	ftxt += "• " + emoji(emojiRocket, "🚀") + " <b>sᴍᴀʀᴛ ǫᴜᴇᴜᴇ:</b> <i>ᴘʟᴀʏʟɪsᴛs, ǫᴜᴇᴜᴇ & sʜᴜꜰʟᴇ</i><br/>"
-	ftxt += "• " + emoji(emojiBolt, "⚡️") + " <b>ᴍᴜʟᴛɪ-ᴀssɪsᴛᴀɴᴛ:</b> <i>sᴇᴀᴍʟᴇss ʟᴏᴀᴅ-ʙᴀʟᴀɴᴄɪɴɢ ᴀᴄʀᴏss ᴀssɪsᴛᴀɴᴛs</i><br/>"
-	ftxt += "• " + emoji(emojiSettings, "⚙️") + " <b>ᴀᴅᴠᴀɴᴄᴇᴅ ᴄᴏɴᴛʀᴏʟs:</b> <i>sᴇᴇᴋ (" + richCode("/seek") + "), ʟᴏᴏᴘ (" + richCode("/loop") + "), sʜᴜꜰʟᴇ</i><br/>"
-	ftxt += "• " + emoji(emojiTools, "🛠️") + " <b>ᴜᴛɪʟs:</b> <i>sᴛᴀᴛs, ᴛᴏᴏʟs, ᴍᴇᴅɪᴀ, ᴡᴇʟᴄᴏᴍᴇ</i>"
-	ftxt += "</p>"
+func queueCard(track media.Track, position int, botUsername string) string {
+	title := track.Title
+	if title == "" {
+		title = track.OriginalInput
+	}
+	titleFormatted := escape(title)
+	videoID := ""
+	if track.Kind == media.SourceYouTube && track.ID != "" {
+		videoID = track.ID
+	}
+	displayTitle := "<b>" + titleFormatted + "</b>"
+	if videoID != "" && botUsername != "" {
+		displayTitle = fmt.Sprintf(`<a href="https://t.me/%s?start=vidid_%s"><b>%s</b></a>`, botUsername, videoID, titleFormatted)
+	} else if link := mediaWwwLink(track); strings.HasPrefix(link, "http") {
+		displayTitle = fmt.Sprintf(`<a href="%s"><b>%s</b></a>`, escape(link), titleFormatted)
+	}
 
-	cta := richNote(emoji(emojiInfo, "ℹ️") + " <i>👇 ᴜsᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴs ʙᴇʟᴏᴡ ᴛᴏ ᴇxᴘʟᴏʀᴇ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs!</i>")
-	_ = uname
-	return heading + sub + intro + ftitle + ftxt + cta
+	duration := "-"
+	if track.Duration > 0 {
+		duration = formatDuration(track.Duration)
+	}
+
+	requester := "ᴜsᴇʀ"
+	if track.RequesterID > 0 {
+		reqName := track.RequesterName
+		if reqName == "" {
+			reqName = "ᴜsᴇʀ"
+		}
+		requester = fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, track.RequesterID, escape(reqName))
+	} else if track.RequesterName != "" {
+		requester = escape(track.RequesterName)
+	}
+
+	mode := "Audio"
+	if track.Video {
+		mode = "Video"
+	}
+
+	return fmt.Sprintf("%s <b>ᴀᴅᴅᴇᴅ ᴛᴏ ǫᴜᴇᴜᴇ</b>\n\n<p>\n<b>‣ ᴛɪᴛʟᴇ:</b> %s<br/>\n<b>‣ ᴅᴜʀᴀᴛɪᴏɴ:</b> <code>%s</code><br/>\n<b>‣ ᴘᴏsɪᴛɪᴏɴ:</b> %s<br/>\n<b>‣ ᴍᴏᴅᴇ:</b> <code>%s</code><br/>\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s\n</p>",
+		emoji(emojiAdd, "➕"),
+		displayTitle,
+		duration,
+		positionTag(position),
+		mode,
+		requester,
+	)
+}
+
+func msgPaused(req string) string {
+	return fmt.Sprintf("<b>%s sᴏɴɢ ᴘᴀᴜsᴇᴅ.</b>\n\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiPause, "🔇"), req)
+}
+
+func msgResumed(req string) string {
+	return fmt.Sprintf("<b>%s sᴏɴɢ ʀᴇsᴜᴍᴇᴅ.</b>\n\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiPlay, "🎞"), req)
+}
+
+func msgSkipping(req string) string {
+	return fmt.Sprintf("%s <b>sᴋɪᴘᴘɪɴɢ ᴄᴜʀʀᴇɴᴛ ᴛʀᴀᴄᴋ...</b>\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiSkip, "➡️"), req)
+}
+
+func msgSkippedEmpty(req string) string {
+	return fmt.Sprintf("%s <b>ǫᴜᴇᴜᴇ ɪs ᴇᴍᴘᴛʏ ɴᴏᴡ.</b>\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiSkip, "➡️"), req)
+}
+
+func msgStopped(req string) string {
+	return fmt.Sprintf("<b>%s ǫᴜᴇᴜᴇ ᴄʟᴇᴀʀᴇᴅ</b>\n<b>‣ sᴛʀᴇᴀᴍɪɴɢ sᴛᴏᴘᴘᴇᴅ</b>\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiStop, "🚫"), req)
+}
+
+func msgLooped(count, req string) string {
+	return fmt.Sprintf("<b>%s ᴄᴜʀʀᴇɴᴛ sᴏɴɢ ᴡɪʟʟ ʙᴇ ʀᴇᴘᴇᴀᴛᴇᴅ %s ᴛɪᴍᴇs!</b>\n\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiLoop, "🔄"), count, req)
+}
+
+func msgSeeked(seconds, req string) string {
+	return fmt.Sprintf("%s <b>sᴇᴇᴋᴇᴅ ᴛᴏ %s!</b>\n\n<b>‣ ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ:</b> %s", emoji(emojiSuccess, "✅"), seconds, req)
+}
+
+func msgShuffled(count int) string {
+	return fmt.Sprintf("%s <b>sʜᴜꜰꜰʟᴇᴅ %d ᴜᴘᴄᴏᴍɪɴɢ ᴛʀᴀᴄᴋ(s).</b>", emoji(emojiRefresh, "🔄"), count)
+}
+
+func msgQueueEmpty() string {
+	return richNote(emoji(emojiQueueIcon, "🗃") + " <b>ǫᴜᴇᴜᴇ ɪs ᴇᴍᴘᴛʏ.</b>")
+}
+
+func msgNoStream() string {
+	return richNote(emoji(emojiError, "❌") + " <b>ɴᴏ ᴀᴄᴛɪᴠᴇ sᴛʀᴇᴀᴍ ʀɪɢʜᴛ ɴᴏᴡ.</b>")
+}
+
+func msgNoActiveVC() string {
+	return richNote(emoji(emojiWarning, "⚠️") + " <b>ɴᴏ ᴀᴄᴛɪᴠᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ꜰᴏᴜɴᴅ.</b>\n<i>ᴘʟᴇᴀsᴇ sᴛᴀʀᴛ ᴛʜᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ꜰɪʀsᴛ, ᴏʀ ᴍᴀᴋᴇ ᴛʜᴇ ᴀssɪsᴛᴀɴᴛ ᴀɴ ᴀᴅᴍɪɴ ᴛᴏ sᴛᴀʀᴛ ɪᴛ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ.</i>")
 }
 
 func helpCategorySelect(showAdmin bool) string {
