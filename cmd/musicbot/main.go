@@ -74,15 +74,16 @@ func main() {
 		mongoStore, openErr := storage.OpenMongo(ctx, cfg.MongoDBURI, cfg.DatabaseName)
 		cancel()
 		if openErr != nil {
-			fatal("open MongoDB", openErr)
+			logger.Error("failed to connect MongoDB; falling back to in-memory storage", "error", openErr)
+		} else {
+			store = mongoStore
+			ctx, cancel = context.WithTimeout(rootCtx, 10*time.Second)
+			if err := store.SeedAdmins(ctx, botUser.ID, cfg.InitialAdminIDs); err != nil {
+				logger.Error("seed initial admins", "error", err)
+			}
+			cancel()
+			logger.Info("MongoDB connected", "database", cfg.DatabaseName)
 		}
-		store = mongoStore
-		ctx, cancel = context.WithTimeout(rootCtx, 10*time.Second)
-		if err := store.SeedAdmins(ctx, botUser.ID, cfg.InitialAdminIDs); err != nil {
-			logger.Error("seed initial admins", "error", err)
-		}
-		cancel()
-		logger.Info("MongoDB connected", "database", cfg.DatabaseName)
 	} else {
 		logger.Warn("MONGODB_URI is unset; authorization changes will be disabled")
 	}
